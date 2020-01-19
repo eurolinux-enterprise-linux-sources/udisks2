@@ -1,0 +1,34 @@
+From 6ad2d39f31e9efbbd0ab4f48e5796e9d0485c59f Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Thu, 2 Nov 2017 14:00:12 +0100
+Subject: [PATCH] Fix checking for distribution and version in integration
+ tests
+
+And also don't try to run the tests if we fail to detect the
+distribution and/or version.
+
+Resolves: rhbz#1508385
+---
+ src/tests/integration-test | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/tests/integration-test b/src/tests/integration-test
+index 019a8dc..44ddec5 100755
+--- a/src/tests/integration-test
++++ b/src/tests/integration-test
+@@ -1747,7 +1747,11 @@ class MDRaid(UDisksTestCase):
+ def get_distro_version():
+     # 3rd to 6th fields from e.g. "CPE OS Name: cpe:/o:fedoraproject:fedora:27" or "CPE OS Name: cpe:/o:centos:centos:7"
+     out = subprocess.check_output('hostnamectl status | grep "CPE OS Name"', shell=True).decode().strip()
+-    _project, distro, version = tuple(out.split(":")[3:65])
++    try:
++        _project, distro, version = tuple(out.split(":")[3:6])
++    except ValueError:
++        print('Failed to get distribution and version from "%s". Aborting.' % out)
++        sys.exit(1)
+ 
+     return (distro, version)
+ 
+-- 
+1.8.3.1
+

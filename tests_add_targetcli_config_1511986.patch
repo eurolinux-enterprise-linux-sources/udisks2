@@ -1,0 +1,630 @@
+From 76168cd9244fc47193760a0401bf42f1a8b06db6 Mon Sep 17 00:00:00 2001
+From: Iain Lane <iainl@gnome.org>
+Date: Thu, 19 Apr 2018 12:41:27 +0100
+Subject: [PATCH 1/2] tests: Pass absolute path to targetcli_config.json
+
+If the integration tests are run from a different directory, we will
+fail to find targetcli_config.json with an error like
+
+Related: rhbz#1511986
+---
+ src/tests/integration-test | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/tests/integration-test b/src/tests/integration-test
+index f863578..bca5239 100755
+--- a/src/tests/integration-test
++++ b/src/tests/integration-test
+@@ -1649,9 +1649,12 @@ def setup_lio():
+                  re.match(r'sd[a-z]+$', dev)}
+ 
+     # create fake SCSI hard drives
++    our_path = os.path.abspath(__file__)
++    our_dir = os.path.dirname(our_path)
++    json_path = os.path.join(our_dir, 'dbus-tests', 'targetcli_config.json')
+     assert subprocess.call(
+         ["targetcli",
+-         "restoreconfig dbus-tests/targetcli_config.json"]) == 0
++         "restoreconfig %s" % json_path]) == 0
+     time.sleep(0.1)
+ 
+     devs = {dev for dev in os.listdir("/dev") if
+-- 
+1.8.3.1
+
+
+From f8fef004a8ce9bc64bea1d89dcce0d7465e583ed Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Fri, 22 Jun 2018 12:37:17 +0200
+Subject: [PATCH 2/2] Fix failing MDRAID integration test
+
+Test is failing because 'targetcli_config.json' is not included
+in the archive, so we need to add it manually using a patch.
+
+Resolves: rhbz#1511986
+---
+ src/tests/integration-test      |   2 +-
+ src/tests/targetcli_config.json | 558 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 559 insertions(+), 1 deletion(-)
+ create mode 100644 src/tests/targetcli_config.json
+
+diff --git a/src/tests/integration-test b/src/tests/integration-test
+index bca5239..b6b1103 100755
+--- a/src/tests/integration-test
++++ b/src/tests/integration-test
+@@ -1651,7 +1651,7 @@ def setup_lio():
+     # create fake SCSI hard drives
+     our_path = os.path.abspath(__file__)
+     our_dir = os.path.dirname(our_path)
+-    json_path = os.path.join(our_dir, 'dbus-tests', 'targetcli_config.json')
++    json_path = os.path.join(our_dir, 'targetcli_config.json')
+     assert subprocess.call(
+         ["targetcli",
+          "restoreconfig %s" % json_path]) == 0
+diff --git a/src/tests/targetcli_config.json b/src/tests/targetcli_config.json
+new file mode 100644
+index 0000000..25d506b
+--- /dev/null
++++ b/src/tests/targetcli_config.json
+@@ -0,0 +1,558 @@
++{
++  "fabric_modules": [],
++  "storage_objects": [
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk4",
++      "name": "udisks_test_disk4",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "65541bbc-0ffc-42cb-b639-6ce91a818511"
++    },
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk3",
++      "name": "udisks_test_disk3",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "5282611e-2e74-4019-8ca5-d8ceb09dfa15"
++    },
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk2",
++      "name": "udisks_test_disk2",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "dd927109-b9e7-462c-b95a-ae7878623713"
++    },
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk1",
++      "name": "udisks_test_disk1",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "0604a813-ce79-45fa-a9ff-eaf82188594e"
++    },
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk_iscsi1",
++      "name": "udisks_test_iscsi1",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "ee5473b7-93ce-4002-8141-2ef990f7ba04"
++    },
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk_iscsi2",
++      "name": "udisks_test_iscsi2",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "ee5473b7-93ce-4002-8141-2ef990f7ba04"
++    },
++    {
++      "attributes": {
++        "block_size": 512,
++        "emulate_3pc": 1,
++        "emulate_caw": 1,
++        "emulate_fua_write": 1,
++        "emulate_model_alias": 1,
++        "emulate_rest_reord": 0,
++        "emulate_tas": 1,
++        "emulate_tpu": 0,
++        "emulate_tpws": 0,
++        "emulate_ua_intlck_ctrl": 0,
++        "emulate_write_cache": 1,
++        "enforce_pr_isids": 1,
++        "force_pr_aptpl": 0,
++        "is_nonrot": 0,
++        "max_unmap_block_desc_count": 1,
++        "max_unmap_lba_count": 8192,
++        "max_write_same_len": 4096,
++        "optimal_sectors": 2048,
++        "pi_prot_format": 0,
++        "pi_prot_type": 0,
++        "queue_depth": 128,
++        "unmap_granularity": 1,
++        "unmap_granularity_alignment": 0
++      },
++      "dev": "/var/tmp/udisks_test_disk_iscsi3",
++      "name": "udisks_test_iscsi3",
++      "plugin": "fileio",
++      "size": 524288000,
++      "write_back": true,
++      "wwn": "ee5473b7-93ce-4002-8141-2ef990f7ba04"
++    }
++  ],
++  "targets": [
++    {
++      "fabric": "loopback",
++      "tpgs": [
++        {
++          "attributes": {
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "ea4c386be4",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_disk4"
++            }
++          ],
++          "node_acls": [],
++          "portals": [],
++          "tag": 1
++        }
++      ],
++      "wwn": "naa.50014055ba294ff9"
++    },
++    {
++      "fabric": "loopback",
++      "tpgs": [
++        {
++          "attributes": {
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "7a8a8952a0",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_disk3"
++            }
++          ],
++          "node_acls": [],
++          "portals": [],
++          "tag": 1
++        }
++      ],
++      "wwn": "naa.5001405929853f55"
++    },
++    {
++      "fabric": "loopback",
++      "tpgs": [
++        {
++          "attributes": {
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "d0173d579b",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_disk2"
++            }
++          ],
++          "node_acls": [],
++          "portals": [],
++          "tag": 1
++        }
++      ],
++      "wwn": "naa.50014054a77f7fa2"
++    },
++    {
++      "fabric": "loopback",
++      "tpgs": [
++        {
++          "attributes": {
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "d4a2f5275c",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_disk1"
++            }
++          ],
++          "node_acls": [],
++          "portals": [],
++          "tag": 1
++        }
++      ],
++      "wwn": "naa.5001405cf0711e93"
++    },
++    {
++      "fabric": "iscsi",
++      "tpgs": [
++        {
++          "attributes": {
++            "authentication": 0,
++            "cache_dynamic_acls": 1,
++            "default_cmdsn_depth": 64,
++            "default_erl": 0,
++            "demo_mode_discovery": 1,
++            "demo_mode_write_protect": 0,
++            "generate_node_acls": 1,
++            "login_timeout": 15,
++            "netif_timeout": 2,
++            "prod_mode_write_protect": 0,
++            "t10_pi": 0,
++            "tpg_enabled_sendtargets": 1
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "121c69c714",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_iscsi1"
++            }
++          ],
++          "node_acls": [],
++          "parameters": {
++            "AuthMethod": "CHAP,None",
++            "DataDigest": "CRC32C,None",
++            "DataPDUInOrder": "Yes",
++            "DataSequenceInOrder": "Yes",
++            "DefaultTime2Retain": "20",
++            "DefaultTime2Wait": "2",
++            "ErrorRecoveryLevel": "0",
++            "FirstBurstLength": "65536",
++            "HeaderDigest": "CRC32C,None",
++            "IFMarkInt": "Reject",
++            "IFMarker": "No",
++            "ImmediateData": "Yes",
++            "InitialR2T": "Yes",
++            "MaxBurstLength": "262144",
++            "MaxConnections": "1",
++            "MaxOutstandingR2T": "1",
++            "MaxRecvDataSegmentLength": "8192",
++            "MaxXmitDataSegmentLength": "262144",
++            "OFMarkInt": "Reject",
++            "OFMarker": "No",
++            "TargetAlias": "LIO Target"
++          },
++          "portals": [
++            {
++              "ip_address": "0.0.0.0",
++              "iser": false,
++              "port": 3260
++            }
++          ],
++          "tag": 1
++        }
++      ],
++      "wwn": "iqn.2003-01.udisks.test:iscsi-test-noauth"
++    },
++    {
++      "fabric": "iscsi",
++      "tpgs": [
++        {
++          "attributes": {
++            "authentication": 0,
++            "cache_dynamic_acls": 0,
++            "default_cmdsn_depth": 64,
++            "default_erl": 0,
++            "demo_mode_discovery": 1,
++            "demo_mode_write_protect": 1,
++            "generate_node_acls": 0,
++            "login_timeout": 15,
++            "netif_timeout": 2,
++            "prod_mode_write_protect": 0,
++            "t10_pi": 0,
++            "tpg_enabled_sendtargets": 1
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "f466bcd8fb",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_iscsi2"
++            }
++          ],
++          "node_acls": [
++            {
++              "attributes": {
++                "dataout_timeout": 3,
++                "dataout_timeout_retries": 5,
++                "default_erl": 0,
++                "nopin_response_timeout": 30,
++                "nopin_timeout": 15,
++                "random_datain_pdu_offsets": 0,
++                "random_datain_seq_offsets": 0,
++                "random_r2t_offsets": 0
++              },
++              "chap_password": "udisks",
++              "chap_userid": "iqn.1994-05.com.redhat:iscsi-test",
++              "mapped_luns": [
++                {
++                  "alias": "2387cf5a50",
++                  "index": 0,
++                  "tpg_lun": 0,
++                  "write_protect": false
++                }
++              ],
++              "node_wwn": "iqn.1994-05.com.redhat:iscsi-test"
++            }
++          ],
++          "parameters": {
++            "AuthMethod": "CHAP,None",
++            "DataDigest": "CRC32C,None",
++            "DataPDUInOrder": "Yes",
++            "DataSequenceInOrder": "Yes",
++            "DefaultTime2Retain": "20",
++            "DefaultTime2Wait": "2",
++            "ErrorRecoveryLevel": "0",
++            "FirstBurstLength": "65536",
++            "HeaderDigest": "CRC32C,None",
++            "IFMarkInt": "Reject",
++            "IFMarker": "No",
++            "ImmediateData": "Yes",
++            "InitialR2T": "Yes",
++            "MaxBurstLength": "262144",
++            "MaxConnections": "1",
++            "MaxOutstandingR2T": "1",
++            "MaxRecvDataSegmentLength": "8192",
++            "MaxXmitDataSegmentLength": "262144",
++            "OFMarkInt": "Reject",
++            "OFMarker": "No",
++            "TargetAlias": "LIO Target"
++          },
++          "portals": [
++            {
++              "ip_address": "0.0.0.0",
++              "iser": false,
++              "port": 3260
++            }
++          ],
++          "tag": 1
++        }
++      ],
++      "wwn": "iqn.2003-01.udisks.test:iscsi-test-chap"
++    },
++    {
++      "fabric": "iscsi",
++      "tpgs": [
++        {
++          "attributes": {
++            "authentication": 0,
++            "cache_dynamic_acls": 0,
++            "default_cmdsn_depth": 64,
++            "default_erl": 0,
++            "demo_mode_discovery": 1,
++            "demo_mode_write_protect": 1,
++            "generate_node_acls": 0,
++            "login_timeout": 15,
++            "netif_timeout": 2,
++            "prod_mode_write_protect": 0,
++            "t10_pi": 0,
++            "tpg_enabled_sendtargets": 1
++          },
++          "enable": true,
++          "luns": [
++            {
++              "alias": "f466bcd8fb",
++              "index": 0,
++              "storage_object": "/backstores/fileio/udisks_test_iscsi3"
++            }
++          ],
++          "node_acls": [
++            {
++              "attributes": {
++                "dataout_timeout": 3,
++                "dataout_timeout_retries": 5,
++                "default_erl": 0,
++                "nopin_response_timeout": 30,
++                "nopin_timeout": 15,
++                "random_datain_pdu_offsets": 0,
++                "random_datain_seq_offsets": 0,
++                "random_r2t_offsets": 0
++              },
++              "chap_password": "udisks",
++              "chap_userid": "iqn.1994-05.com.redhat:iscsi-test",
++              "chap_mutual_password": "udisks-mutual",
++              "chap_mutual_userid": "iqn.2003-01.udisks.test:iscsi-test-mutual",
++              "mapped_luns": [
++                {
++                  "alias": "2387cf5a50",
++                  "index": 0,
++                  "tpg_lun": 0,
++                  "write_protect": false
++                }
++              ],
++              "node_wwn": "iqn.1994-05.com.redhat:iscsi-test"
++            }
++          ],
++          "parameters": {
++            "AuthMethod": "CHAP,None",
++            "DataDigest": "CRC32C,None",
++            "DataPDUInOrder": "Yes",
++            "DataSequenceInOrder": "Yes",
++            "DefaultTime2Retain": "20",
++            "DefaultTime2Wait": "2",
++            "ErrorRecoveryLevel": "0",
++            "FirstBurstLength": "65536",
++            "HeaderDigest": "CRC32C,None",
++            "IFMarkInt": "Reject",
++            "IFMarker": "No",
++            "ImmediateData": "Yes",
++            "InitialR2T": "Yes",
++            "MaxBurstLength": "262144",
++            "MaxConnections": "1",
++            "MaxOutstandingR2T": "1",
++            "MaxRecvDataSegmentLength": "8192",
++            "MaxXmitDataSegmentLength": "262144",
++            "OFMarkInt": "Reject",
++            "OFMarker": "No",
++            "TargetAlias": "LIO Target"
++          },
++          "portals": [
++            {
++              "ip_address": "0.0.0.0",
++              "iser": false,
++              "port": 3260
++            }
++          ],
++          "tag": 1
++        }
++      ],
++      "wwn": "iqn.2003-01.udisks.test:iscsi-test-mutual"
++    }
++  ]
++}
+-- 
+1.8.3.1
+

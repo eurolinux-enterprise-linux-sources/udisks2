@@ -5,7 +5,7 @@
 %global libatasmart_version             0.17
 %global dbus_version                    1.4.0
 %global with_gtk_doc                    1
-%global libblockdev_version             2.10
+%global libblockdev_version             2.13
 
 %define is_git                          %(git show > /dev/null 2>&1 && echo 1 || echo 0)
 %define git_hash                        %(git log -1 --pretty=format:"%h" || true)
@@ -14,7 +14,7 @@
 Name:    udisks2
 Summary: Disk Manager
 Version: 2.7.3
-Release: 6%{?dist}
+Release: 8%{?dist}
 License: GPLv2+
 Group:   System Environment/Libraries
 URL:     https://github.com/storaged-project/udisks
@@ -25,6 +25,11 @@ Patch1:  raid_watchers_1400056.patch
 Patch2:  no_discard_1516697.patch
 Patch3:  fix_thinpool_size_1534904.patch
 Patch4:  fix_mpoin_cleanup_1384796.patch
+Patch5:  luks_resize_1567992.patch
+Patch6:  tests_distro_check_1508385.patch
+Patch7:  tests_dont_skip_1511974.patch
+Patch8:  tests_add_targetcli_config_1511986.patch
+Patch9:  udisks-2.7.4-bd_dep_check.patch
 
 BuildRequires: glib2-devel >= %{glib2_version}
 BuildRequires: gobject-introspection-devel >= %{gobject_introspection_version}
@@ -145,6 +150,11 @@ dynamic library, which provides access to the udisksd daemon.
 %patch2 -p1
 %patch3 -p1
 %patch4 -p1
+%patch5 -p1
+%patch6 -p1
+%patch7 -p1
+%patch8 -p1
+%patch9 -p1
 
 %build
 autoreconf -ivf
@@ -256,6 +266,20 @@ udevadm trigger
 
 # Note: please don't forget the %{?dist} in the changelog. Thanks
 %changelog
+* Tue Jul 10 2018 Tomas Bzatek <tbzatek@redhat.com> - 2.7.3-8
+- Fix too strict libblockdev runtime dependency checks
+  Resolves: rhbz#1598430
+
+* Wed Jun 20 2018 Vojtech Trefny <vtrefny@redhat.com> - 2.7.3-7
+- core: Add Encrypted.Resize method
+  Resolves: rhbz#1567992
+- Fix checking for distribution and version in integration tests
+  Resolves: rhbz#1508385
+- Do not skip integration tests on CentOS/RHEL
+  Resolves: rhbz#1511974
+- Fix failing MDRAID integration test
+  Resolves: rhbz#1511986
+
 * Tue Feb 06 2018 Vojtech Trefny <vtrefny@redhat.com> - 2.7.3-6
 - Fix escaping mountpoint for the cleanup service
   Related: rhbz#1384796

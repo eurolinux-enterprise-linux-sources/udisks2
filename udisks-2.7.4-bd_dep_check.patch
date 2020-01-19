@@ -1,0 +1,68 @@
+From e31199054797ca8de62d9d1f32a46a58f2211159 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Wed, 4 Oct 2017 09:24:08 +0200
+Subject: [PATCH] Use new libblockdev functionality to disable checks during
+ init
+
+Loading a plugin shouldn't fail because one of its runtime
+dependecies is missing. Libblockdev can now skip dependency checks
+during init and only return an error if the dependency is still
+missing when a function that needs it is called.
+---
+ src/udisksdaemon.c | 35 ++++++++++++++++++++++-------------
+ 1 file changed, 22 insertions(+), 13 deletions(-)
+
+diff --git a/src/udisksdaemon.c b/src/udisksdaemon.c
+index a15e5c42..9a013ec9 100644
+--- a/src/udisksdaemon.c
++++ b/src/udisksdaemon.c
+@@ -263,27 +263,36 @@ udisks_daemon_constructed (GObject *object)
+   BDPluginSpec **plugin_p = NULL;
+   error = NULL;
+ 
+-  ret = bd_try_init (plugins, NULL, NULL, &error);
++  /* Skip runtime dependency checks when initializing libblockdev. Plugin
++     shouldn't fail to load just because some if its dependencies is missing.
++   */
++  ret = bd_switch_init_checks (FALSE, &error);
+   if (!ret)
+-  {
+-    if (error)
+     {
+       udisks_error ("Error initializing libblockdev library: %s (%s, %d)",
+                     error->message, g_quark_to_string (error->domain), error->code);
+       g_clear_error (&error);
+     }
+-    else
++
++  ret = bd_try_init (plugins, NULL, NULL, &error);
++  if (!ret)
+     {
+-      /* a missing plugin is okay, calling functions from it will fail, but
+-         until that happens, life will just be great */
+-      for (plugin_p=plugins; *plugin_p; plugin_p++)
+-        if (!bd_is_plugin_available ((*plugin_p)->name))
+-          /* TODO: log plugin names when the function below is available */
+-          /* udisks_warning ("Failed to load the '%s' libblockdev plugin", */
+-          /*                 bd_get_plugin_name ((*plugin_p)->name)); */
+-          udisks_warning ("Failed to load a libblockdev plugin");
++      if (error)
++        {
++          udisks_error ("Error initializing libblockdev library: %s (%s, %d)",
++                        error->message, g_quark_to_string (error->domain), error->code);
++          g_clear_error (&error);
++        }
++    else
++      {
++        /* a missing plugin is okay, calling functions from it will fail, but
++           until that happens, life will just be great */
++        for (plugin_p=plugins; *plugin_p; plugin_p++)
++          if (!bd_is_plugin_available ((*plugin_p)->name))
++            udisks_warning ("Failed to load the '%s' libblockdev plugin",
++                            bd_get_plugin_name ((*plugin_p)->name));
++      }
+     }
+-  }
+ 
+   daemon->authority = polkit_authority_get_sync (NULL, &error);
+   if (daemon->authority == NULL)

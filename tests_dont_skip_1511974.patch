@@ -1,0 +1,51 @@
+From c48f2594f2cca37bc1335d354961202db7baee17 Mon Sep 17 00:00:00 2001
+From: Vratislav Podzimek <vpodzime@redhat.com>
+Date: Fri, 24 Nov 2017 15:16:25 +0100
+Subject: [PATCH] Do not skip integration tests on CentOS/RHEL
+
+The scsi_debug module doesn't seem to be causing kernel panics
+anymore.
+
+Resolves: rhbz#1511974
+---
+ src/tests/integration-test | 17 -----------------
+ 1 file changed, 17 deletions(-)
+
+diff --git a/src/tests/integration-test b/src/tests/integration-test
+index 44ddec5..f863578 100755
+--- a/src/tests/integration-test
++++ b/src/tests/integration-test
+@@ -1744,17 +1744,6 @@ class MDRaid(UDisksTestCase):
+ # ----------------------------------------------------------------------------
+ 
+ 
+-def get_distro_version():
+-    # 3rd to 6th fields from e.g. "CPE OS Name: cpe:/o:fedoraproject:fedora:27" or "CPE OS Name: cpe:/o:centos:centos:7"
+-    out = subprocess.check_output('hostnamectl status | grep "CPE OS Name"', shell=True).decode().strip()
+-    try:
+-        _project, distro, version = tuple(out.split(":")[3:6])
+-    except ValueError:
+-        print('Failed to get distribution and version from "%s". Aborting.' % out)
+-        sys.exit(1)
+-
+-    return (distro, version)
+-
+ if __name__ == '__main__':
+     argparser = argparse.ArgumentParser(description='udisks2 integration test suite')
+     argparser.add_argument('-l', '--log-file', dest='logfile',
+@@ -1763,12 +1752,6 @@ if __name__ == '__main__':
+                            help='name of test class or method (e. g. "Drive", "FS.test_ext2")')
+     cli_args = argparser.parse_args()
+ 
+-    distro, version = get_distro_version()
+-    if distro in ('centos', 'enterprise_linux'):
+-        print('Skipping integration tests on "%s %s".'\
+-              'SCSI debug devices causing kernel panic.' % (distro, version))
+-        sys.exit(0)
+-
+     UDisksTestCase.init(logfile=cli_args.logfile)
+     if cli_args.testname:
+         tests = unittest.TestLoader().loadTestsFromNames(
+-- 
+1.8.3.1
+

@@ -1,0 +1,232 @@
+From 9f749a4ea6129c256bb3522291eaa43f63c961c1 Mon Sep 17 00:00:00 2001
+From: Marius Vollmer <mvollmer@redhat.com>
+Date: Tue, 5 Dec 2017 17:17:40 +0200
+Subject: [PATCH] core: Add Encrypted.Resize method
+
+To go with Filesystem.Resize.
+---
+ data/org.freedesktop.UDisks2.xml          |  16 ++++
+ doc/udisks2-sections.txt.in.in            |   4 +
+ src/udiskslinuxencrypted.c                | 134 ++++++++++++++++++++++++++++++
+ udisks/udisksclient.c                     |   1 +
+ 4 files changed, 155 insertions(+)
+
+diff --git a/data/org.freedesktop.UDisks2.xml b/data/org.freedesktop.UDisks2.xml
+index fa53a72..75ec0ea 100644
+--- a/data/org.freedesktop.UDisks2.xml
++++ b/data/org.freedesktop.UDisks2.xml
+@@ -2059,6 +2059,20 @@
+       <arg name="options" direction="in" type="a{sv}"/>
+     </method>
+
++    <!--
++        Resize:
++        @size: The target cleartext size in bytes, 0 for maximum.
++        @options: Options (currently unused except for <link linkend="udisks-std-options">standard options</link>).
++        @since: 2.7.6
++
++        Resizes the encrypted device.  The device must be unlocked.
++        The given size is the target size for the cleartext device.
++    -->
++    <method name="Resize">
++      <arg name="size" direction="in" type="t"/>
++      <arg name="options" direction="in" type="a{sv}"/>
++    </method>
++
+   </interface>
+
+   <!-- ********************************************************************** -->
+@@ -2451,6 +2465,8 @@
+              <listitem><para>Locking encrypted device.</para></listitem></varlistentry>
+            <varlistentry><term>encrypted-modify</term>
+              <listitem><para>Modifying encrypted device.</para></listitem></varlistentry>
++           <varlistentry><term>encrypted-resize</term>
++             <listitem><para>Resizing encrypted device.</para></listitem></varlistentry>
+            <varlistentry><term>swapspace-start</term>
+              <listitem><para>Starting swapspace.</para></listitem></varlistentry>
+            <varlistentry><term>swapspace-stop</term>
+diff --git a/doc/udisks2-sections.txt.in.in b/doc/udisks2-sections.txt.in.in
+index 5860d43..13cf728 100644
+--- a/doc/udisks2-sections.txt.in.in
++++ b/doc/udisks2-sections.txt.in.in
+@@ -1036,6 +1036,10 @@ udisks_encrypted_call_change_passphrase
+ udisks_encrypted_call_change_passphrase_finish
+ udisks_encrypted_call_change_passphrase_sync
+ udisks_encrypted_complete_change_passphrase
++udisks_encrypted_call_resize
++udisks_encrypted_call_resize_finish
++udisks_encrypted_call_resize_sync
++udisks_encrypted_complete_resize
+ UDisksEncryptedProxy
+ UDisksEncryptedProxyClass
+ udisks_encrypted_proxy_new
+diff --git a/src/udiskslinuxencrypted.c b/src/udiskslinuxencrypted.c
+index 7b19e84..08e59d1 100644
+--- a/src/udiskslinuxencrypted.c
++++ b/src/udiskslinuxencrypted.c
+@@ -43,6 +43,7 @@
+ #include "udiskscrypttabentry.h"
+ #include "udiskscrypttabmonitor.h"
+ #include "udisksspawnedjob.h"
++#include "udiskssimplejob.h"
+
+ /**
+  * SECTION:udiskslinuxencrypted
+@@ -802,10 +803,143 @@ handle_change_passphrase (UDisksEncrypted        *encrypted,
+
+ /* ---------------------------------------------------------------------------------------------------- */
+
++/* runs in thread dedicated to handling method call */
++static gboolean
++handle_resize (UDisksEncrypted       *encrypted,
++               GDBusMethodInvocation *invocation,
++               guint64                size,
++               GVariant              *options)
++{
++  UDisksObject *object = NULL;
++  UDisksBlock *block;
++  UDisksObject *cleartext_object = NULL;
++  UDisksBlock *cleartext_block;
++  UDisksDaemon *daemon;
++  uid_t caller_uid;
++  const gchar *action_id = NULL;
++  const gchar *message = NULL;
++  GError *error = NULL;
++  UDisksBaseJob *job = NULL;
++
++  object = udisks_daemon_util_dup_object (encrypted, &error);
++  if (object == NULL)
++    {
++      g_dbus_method_invocation_take_error (invocation, error);
++      goto out;
++    }
++
++  block = udisks_object_peek_block (object);
++  daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
++
++  /* Fail if the device is not a LUKS device */
++  if (!(g_strcmp0 (udisks_block_get_id_usage (block), "crypto") == 0 &&
++        g_strcmp0 (udisks_block_get_id_type (block), "crypto_LUKS") == 0))
++    {
++      g_dbus_method_invocation_return_error (invocation,
++                                             UDISKS_ERROR,
++                                             UDISKS_ERROR_FAILED,
++                                             "Device %s does not appear to be a LUKS device",
++                                             udisks_block_get_device (block));
++      goto out;
++    }
++
++  error = NULL;
++  if (!udisks_daemon_util_get_caller_uid_sync (daemon, invocation, NULL /* GCancellable */, &caller_uid, NULL, NULL, &error))
++    {
++      g_dbus_method_invocation_return_gerror (invocation, error);
++      g_clear_error (&error);
++      goto out;
++    }
++
++  /* Fail if device is not unlocked */
++  cleartext_object = udisks_daemon_wait_for_object_sync (daemon,
++                                                         wait_for_cleartext_object,
++                                                         g_strdup (g_dbus_object_get_object_path (G_DBUS_OBJECT (object))),
++                                                         g_free,
++                                                         0, /* timeout_seconds */
++                                                         NULL); /* error */
++  if (cleartext_object == NULL)
++    {
++      g_dbus_method_invocation_return_error (invocation,
++                                             UDISKS_ERROR,
++                                             UDISKS_ERROR_FAILED,
++                                             "Device %s is not unlocked",
++                                             udisks_block_get_device (block));
++      goto out;
++    }
++  cleartext_block = udisks_object_peek_block (cleartext_object);
++
++  action_id = "org.freedesktop.udisks2.modify-device";
++  /* Translators: Shown in authentication dialog when the user
++   * requests resizing a encrypted block device.
++   *
++   * Do not translate $(drive), it's a placeholder and
++   * will be replaced by the name of the drive/device in question
++   */
++  message = N_("Authentication is required to resize the encrypted device $(drive)");
++  if (! udisks_daemon_util_setup_by_user (daemon, object, caller_uid))
++    {
++      if (udisks_block_get_hint_system (block))
++        {
++          action_id = "org.freedesktop.udisks2.modify-device-system";
++        }
++      else if (! udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
++        {
++          action_id = "org.freedesktop.udisks2.modify-device-other-seat";
++        }
++    }
++
++  /* Check that the user is actually authorized to resize the device. */
++  if (! udisks_daemon_util_check_authorization_sync (daemon,
++                                                     object,
++                                                     action_id,
++                                                     options,
++                                                     message,
++                                                     invocation))
++    goto out;
++
++  job = udisks_daemon_launch_simple_job (daemon,
++                                         UDISKS_OBJECT (object),
++                                         "encrypted-resize",
++                                         caller_uid,
++                                         NULL);
++  if (job == NULL)
++    {
++      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
++                                             "Failed to create a job object");
++      goto out;
++    }
++
++  /* TODO: implement progress parsing for udisks_job_set_progress(_valid) */
++  if (! bd_crypto_luks_resize (udisks_block_get_device (cleartext_block), size / 512, &error))
++    {
++      g_dbus_method_invocation_return_error (invocation,
++                                             UDISKS_ERROR,
++                                             UDISKS_ERROR_FAILED,
++                                             "Error resizing encrypted device %s: %s",
++                                             udisks_block_get_device (cleartext_block),
++                                             error->message);
++      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
++      goto out;
++    }
++
++  udisks_encrypted_complete_resize (encrypted, invocation);
++  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
++
++ out:
++  g_clear_object (&cleartext_object);
++  g_clear_object (&object);
++  g_clear_error (&error);
++  return TRUE; /* returning TRUE means that we handled the method invocation */
++}
++
++/* ---------------------------------------------------------------------------------------------------- */
++
+ static void
+ encrypted_iface_init (UDisksEncryptedIface *iface)
+ {
+   iface->handle_unlock              = handle_unlock;
+   iface->handle_lock                = handle_lock;
+   iface->handle_change_passphrase   = handle_change_passphrase;
++  iface->handle_resize              = handle_resize;
+ }
+diff --git a/udisks/udisksclient.c b/udisks/udisksclient.c
+index 7bd5684..980c941 100644
+--- a/udisks/udisksclient.c
++++ b/udisks/udisksclient.c
+@@ -2487,6 +2487,7 @@ udisks_client_get_job_description (UDisksClient   *client,
+       g_hash_table_insert (hash, (gpointer) "encrypted-unlock",     (gpointer) C_("job", "Unlocking Device"));
+       g_hash_table_insert (hash, (gpointer) "encrypted-lock",       (gpointer) C_("job", "Locking Device"));
+       g_hash_table_insert (hash, (gpointer) "encrypted-modify",     (gpointer) C_("job", "Modifying Encrypted Device"));
++      g_hash_table_insert (hash, (gpointer) "encrypted-resize",     (gpointer) C_("job", "Resizing Encrypted Device"));
+       g_hash_table_insert (hash, (gpointer) "swapspace-start",      (gpointer) C_("job", "Starting Swap Device"));
+       g_hash_table_insert (hash, (gpointer) "swapspace-stop",       (gpointer) C_("job", "Stopping Swap Device"));
+       g_hash_table_insert (hash, (gpointer) "filesystem-check",     (gpointer) C_("job", "Checking Filesystem"));
+--
+1.8.3.1
