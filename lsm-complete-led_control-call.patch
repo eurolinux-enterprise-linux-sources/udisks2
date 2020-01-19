@@ -1,0 +1,25 @@
+From df19070c930b28df271944e9d6ee5de42e16f2b4 Mon Sep 17 00:00:00 2001
+From: Tomas Bzatek <tbzatek@redhat.com>
+Date: Fri, 3 Aug 2018 11:40:48 +0200
+Subject: [PATCH] lsm: Properly complete incoming method calls
+
+Returning TRUE from a method call handler is not enough to finish
+the method call and send reply back to caller.
+---
+ modules/lsm/lsm_local.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/modules/lsm/lsm_local.c b/modules/lsm/lsm_local.c
+index a2a46442c..e3fc0162a 100644
+--- a/modules/lsm/lsm_local.c
++++ b/modules/lsm/lsm_local.c
+@@ -180,6 +180,9 @@ led_control (UDisksDriveLsmLocal *ud_drv_lsm_local,
+       goto out;
+     }
+ 
++  /* success, complete the method call in a generic way */
++  g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
++
+  out:
+   g_free ((gchar *) blk_path);
+   if (lsm_err != NULL)

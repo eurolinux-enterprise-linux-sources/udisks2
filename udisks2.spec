@@ -14,7 +14,7 @@
 Name:    udisks2
 Summary: Disk Manager
 Version: 2.7.3
-Release: 8%{?dist}
+Release: 9%{?dist}
 License: GPLv2+
 Group:   System Environment/Libraries
 URL:     https://github.com/storaged-project/udisks
@@ -30,6 +30,21 @@ Patch6:  tests_distro_check_1508385.patch
 Patch7:  tests_dont_skip_1511974.patch
 Patch8:  tests_add_targetcli_config_1511986.patch
 Patch9:  udisks-2.7.4-bd_dep_check.patch
+# https://bugzilla.redhat.com/show_bug.cgi?id=1672664
+# Package udisks2-lsm
+Patch10: lsm-relicense.patch
+Patch11: lsm_local-gerror.patch
+Patch12: lsm-complete-led_control-call.patch
+# https://bugzilla.redhat.com/show_bug.cgi?id=1643350
+# udisksd core dump
+Patch13: udisks-2.7.7-g_source_remove.patch
+# https://bugzilla.redhat.com/show_bug.cgi?id=1637427
+# CVE-2018-17336  Format string vulnerability in udisks_log in udiskslogging.c
+Patch14: udisks-2.8.1-string-format-vulnerability_CVE-2018-17336.patch
+Patch15: udisks-2.8.2-THREAD_ID-logging.patch
+# https://bugzilla.redhat.com/show_bug.cgi?id=1568269
+# man page improvement for udisksctl
+Patch16: udisks-2.8.2-udisksctl-manpage-update.patch
 
 BuildRequires: glib2-devel >= %{glib2_version}
 BuildRequires: gobject-introspection-devel >= %{gobject_introspection_version}
@@ -132,6 +147,20 @@ Obsoletes: storaged-lvm2
 %description -n %{name}-lvm2
 This package contains module for LVM2 configuration.
 
+%package -n %{name}-lsm
+Summary: Module for LSM
+Group: System Environment/Libraries
+Requires: %{name}%{?_isa} = %{version}-%{release}
+License: LGPLv2+
+Requires: libstoragemgmt
+BuildRequires: libstoragemgmt-devel
+BuildRequires: libconfig-devel
+Provides:  storaged-lsm = %{version}-%{release}
+Obsoletes: storaged-lsm
+
+%description -n %{name}-lsm
+This package contains module for LSM configuration.
+
 %package -n lib%{name}-devel
 Summary: Development files for lib%{name}
 Group: Development/Libraries
@@ -155,6 +184,13 @@ dynamic library, which provides access to the udisksd daemon.
 %patch7 -p1
 %patch8 -p1
 %patch9 -p1
+%patch10 -p1
+%patch11 -p1
+%patch12 -p1
+%patch13 -p1
+%patch14 -p1
+%patch15 -p1
+%patch16 -p1
 
 %build
 autoreconf -ivf
@@ -166,6 +202,7 @@ export LDFLAGS='-pie -Wl,-z,now -Wl,-z,relro'
     --sysconfdir=/etc \
     --enable-iscsi    \
     --enable-lvm2     \
+    --enable-lsm      \
 %if %{with_gtk_doc}
     --enable-gtk-doc
 %else
@@ -248,6 +285,13 @@ udevadm trigger
 %{_libdir}/udisks2/modules/libudisks2_lvm2.so
 %{_datadir}/polkit-1/actions/org.freedesktop.UDisks2.lvm2.policy
 
+%files -n %{name}-lsm
+%dir %{_sysconfdir}/udisks2/modules.conf.d
+%{_libdir}/udisks2/modules/libudisks2_lsm.so
+%{_mandir}/man5/udisks2_lsm.conf.*
+%{_datadir}/polkit-1/actions/org.freedesktop.UDisks2.lsm.policy
+%attr(0600,root,root) %{_sysconfdir}/udisks2/modules.conf.d/udisks2_lsm.conf
+
 %files -n %{name}-iscsi
 %{_libdir}/udisks2/modules/libudisks2_iscsi.so
 %{_datadir}/polkit-1/actions/org.freedesktop.UDisks2.iscsi.policy
@@ -266,6 +310,12 @@ udevadm trigger
 
 # Note: please don't forget the %{?dist} in the changelog. Thanks
 %changelog
+* Thu Feb 28 2019 Tomas Bzatek <tbzatek@redhat.com> - 2.7.3-9
+- Build udisks2-lsm subpackage (#1672664)
+- Fix sigint source removal on daemon exit (#1643350)
+- CVE-2018-17336: Fix format string vulnerability in udisks_log (#1637427)
+- Describe command options in the udisksctl man page (#1568269)
+
 * Tue Jul 10 2018 Tomas Bzatek <tbzatek@redhat.com> - 2.7.3-8
 - Fix too strict libblockdev runtime dependency checks
   Resolves: rhbz#1598430
