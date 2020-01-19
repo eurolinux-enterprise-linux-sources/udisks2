@@ -8,7 +8,7 @@
 Summary: Disk Manager
 Name: udisks2
 Version: 2.1.2
-Release: 5%{?dist}
+Release: 6%{?dist}
 License: GPLv2+
 Group: System Environment/Libraries
 URL: http://www.freedesktop.org/wiki/Software/udisks
@@ -96,6 +96,10 @@ Patch14: udisks-2.1.3-uninitialized-wait_data.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=1070144
 Patch15: udisks-2.x.x-CVE-2014-0004.patch
 
+# Rename the Intel SW RAID
+# https://bugzilla.redhat.com/show_bug.cgi?id=1175225
+Patch16: udisks-2.1.2-intel_raid.patch
+
 %description
 udisks provides a daemon, D-Bus API and command line tools for
 managing disks and storage devices. This package is for the udisks 2.x
@@ -133,6 +137,7 @@ daemon. This package is for the udisks 2.x series.
 %patch13 -p1 -b .uninitialized-vars
 %patch14 -p1 -b .uninitialized-wait_data
 %patch15 -p1 -b .cve-2014-0004
+%patch16 -p1 -b .intel_raid
 
 %build
 # umount.udisks2-manpage.patch touches Makefile.am
@@ -202,6 +207,10 @@ rm -f $RPM_BUILD_ROOT%{_libdir}/*.a
 
 # Note: please don't forget the %{?dist} in the changelog. Thanks
 %changelog
+* Wed May 13 2015 Tomas Smetana <tsmetana@redhat.com> - 2.1.2-6
+- Rename the Intel SW RAID (#1175225)
+- Resolves: rhbz#1175225
+
 * Wed Feb 26 2014 Jan Safranek <jsafrane@redhat.com> - 2.1.2-5
 - Fix CVE-2014-0004: stack-based buffer overflow when handling long path names
   (#1070144)
