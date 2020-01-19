@@ -1,0 +1,80 @@
+From 95929aea77992077ea8725c54c4d861f08edbd46 Mon Sep 17 00:00:00 2001
+From: Tomas Bzatek <tbzatek@redhat.com>
+Date: Thu, 16 Jan 2014 17:37:27 +0100
+Subject: [PATCH] Check if cdrom drive has media on cleanup
+
+When cleanup is run, it is supposed to remove lingering mounts.
+That probably works fine for card readers etc. since there's
+a partition exposed for the drive but fails for optical media.
+As a result, when mounted and user presses the drive eject
+button, tray is ejected but mounts lives on.
+
+This patch adds a special check for CDROM drives and looks for
+active media.
+
+https://bugs.freedesktop.org/show_bug.cgi?id=72206
+---
+ src/udisksstate.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/src/udisksstate.c b/src/udisksstate.c
+index e7b549a..73aba4f 100644
+--- a/src/udisksstate.c
++++ b/src/udisksstate.c
+@@ -541,6 +541,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
+   gboolean device_exists;
+   gboolean device_to_be_cleaned;
+   gboolean attempt_no_cleanup;
++  gboolean empty_cd_drive;
+   UDisksMountMonitor *monitor;
+   GUdevClient *udev_client;
+   GUdevDevice *udev_device;
+@@ -552,6 +553,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
+   device_exists = FALSE;
+   device_to_be_cleaned = FALSE;
+   attempt_no_cleanup = FALSE;
++  empty_cd_drive = FALSE;
+   block_device_value = NULL;
+   fstab_mount_value = NULL;
+   fstab_mount = FALSE;
+@@ -651,6 +653,16 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
+                   g_object_unref (udev_device_disk);
+                 }
+             }
++          /* for disk, check if it's a cd-rom drive and has media */
++          else if (g_strcmp0 (g_udev_device_get_devtype (udev_device), "disk") == 0)
++            {
++              device_exists = TRUE;
++
++              /* taken from udisks_daemon_util_block_get_size() */
++              if (g_udev_device_get_property_as_boolean (udev_device, "ID_CDROM") &&
++                 !g_udev_device_get_property_as_boolean (udev_device, "ID_CDROM_MEDIA"))
++                empty_cd_drive = TRUE;
++            }
+           else
+             {
+               device_exists = TRUE;
+@@ -670,7 +682,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
+         }
+     }
+ 
+-  if (is_mounted && device_exists && !device_to_be_cleaned)
++  if (is_mounted && device_exists && !device_to_be_cleaned && !empty_cd_drive)
+     keep = TRUE;
+ 
+  out:
+@@ -679,6 +691,11 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
+     {
+       if (!device_exists)
+         {
++          udisks_notice ("Cleaning up mount point %s (device %d:%d is CDROM and has no media)",
++                         mount_point, major (block_device), minor (block_device));
++        }
++      else if (!device_exists)
++        {
+           udisks_notice ("Cleaning up mount point %s (device %d:%d no longer exist)",
+                          mount_point, major (block_device), minor (block_device));
+         }
+-- 
+1.8.1.5
+
