@@ -58,6 +58,9 @@
 #include "udiskscrypttabmonitor.h"
 #include "udiskscrypttabentry.h"
 #include "udiskslinuxdevice.h"
+#include "udisksmodulemanager.h"
+
+#include <modules/udisksmoduleifacetypes.h>
 
 /**
  * SECTION:udiskslinuxblockobject
@@ -92,12 +95,21 @@ struct _UDisksLinuxBlockObject
   UDisksSwapspace *iface_swapspace;
   UDisksEncrypted *iface_encrypted;
   UDisksLoop *iface_loop;
+  GHashTable *module_ifaces;
 };
 
 struct _UDisksLinuxBlockObjectClass
 {
   UDisksObjectSkeletonClass parent_class;
 };
+
+typedef struct
+{
+  UDisksObject *interface;
+  UDisksObjectHasInterfaceFunc has_func;
+  UDisksObjectConnectInterfaceFunc connect_func;
+  UDisksObjectUpdateInterfaceFunc update_func;
+} ModuleInterfaceEntry;
 
 enum
 {
@@ -140,6 +152,8 @@ udisks_linux_block_object_finalize (GObject *_object)
     g_object_unref (object->iface_encrypted);
   if (object->iface_loop != NULL)
     g_object_unref (object->iface_loop);
+  if (object->module_ifaces != NULL)
+    g_hash_table_destroy (object->module_ifaces);
 
   if (G_OBJECT_CLASS (udisks_linux_block_object_parent_class)->finalize != NULL)
     G_OBJECT_CLASS (udisks_linux_block_object_parent_class)->finalize (_object);
@@ -329,22 +343,42 @@ udisks_linux_block_object_get_device (UDisksLinuxBlockObject *object)
   return g_object_ref (object->device);
 }
 
+/**
+ * udisks_linux_block_object_get_device_file:
+ * @object: A #UDisksLinuxBlockObject.
+ *
+ * Gets the device path for this object (eg. /dev/sda1).
+ *
+ * Returns: A device path. Free with g_free().
+ */
+gchar *
+udisks_linux_block_object_get_device_file (UDisksLinuxBlockObject *object)
+{
+  UDisksLinuxDevice *device = NULL;
+  gchar *device_file = NULL;
+
+  g_return_val_if_fail (UDISKS_IS_LINUX_BLOCK_OBJECT (object), NULL);
+
+  /* Return the device filename (eg.: /dev/sda1) */
+  device = udisks_linux_block_object_get_device (object);
+  device_file = g_strdup (g_udev_device_get_device_file (device->udev_device));
+
+  /* Free resources. */
+  g_object_unref (device);
+
+  return device_file;
+}
+
 /* ---------------------------------------------------------------------------------------------------- */
 
-typedef gboolean (*HasInterfaceFunc)    (UDisksLinuxBlockObject     *object);
-typedef void     (*ConnectInterfaceFunc) (UDisksLinuxBlockObject    *object);
-typedef void     (*UpdateInterfaceFunc) (UDisksLinuxBlockObject     *object,
-                                         const gchar    *uevent_action,
-                                         GDBusInterface *interface);
-
 static void
-update_iface (UDisksLinuxBlockObject   *object,
-              const gchar              *uevent_action,
-              HasInterfaceFunc          has_func,
-              ConnectInterfaceFunc      connect_func,
-              UpdateInterfaceFunc       update_func,
-              GType                     skeleton_type,
-              gpointer                  _interface_pointer)
+update_iface (UDisksObject                     *object,
+              const gchar                      *uevent_action,
+              UDisksObjectHasInterfaceFunc      has_func,
+              UDisksObjectConnectInterfaceFunc  connect_func,
+              UDisksObjectUpdateInterfaceFunc   update_func,
+              GType                             skeleton_type,
+              gpointer                          _interface_pointer)
 {
   gboolean has;
   gboolean add;
@@ -391,25 +425,26 @@ update_iface (UDisksLinuxBlockObject   *object,
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
-/* org.freedesktop.UDisks.Block */
+/* org.freedesktop.UDisks2.Block */
 
 static gboolean
-block_device_check (UDisksLinuxBlockObject *object)
+block_device_check (UDisksObject *object)
 {
   return TRUE;
 }
 
 static void
-block_device_connect (UDisksLinuxBlockObject *object)
+block_device_connect (UDisksObject *object)
 {
 }
 
-static void
-block_device_update (UDisksLinuxBlockObject *object,
-                     const gchar            *uevent_action,
-                     GDBusInterface         *_iface)
+static gboolean
+block_device_update (UDisksObject   *object,
+                     const gchar    *uevent_action,
+                     GDBusInterface *_iface)
 {
-  udisks_linux_block_update (UDISKS_LINUX_BLOCK (_iface), object);
+  udisks_linux_block_update (UDISKS_LINUX_BLOCK (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -448,19 +483,20 @@ disk_is_partitioned_by_kernel (GUdevDevice *device)
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
-/* org.freedesktop.UDisks.PartitionTable */
+/* org.freedesktop.UDisks2.PartitionTable */
 
 static gboolean
-partition_table_check (UDisksLinuxBlockObject *object)
+partition_table_check (UDisksObject *object)
 {
+  UDisksLinuxBlockObject *block_object = UDISKS_LINUX_BLOCK_OBJECT (object);
   gboolean ret = FALSE;
 
   /* only consider whole disks, never partitions */
-  if (g_strcmp0 (g_udev_device_get_devtype (object->device->udev_device), "disk") != 0)
+  if (g_strcmp0 (g_udev_device_get_devtype (block_object->device->udev_device), "disk") != 0)
     goto out;
 
   /* if blkid(8) already identified the device as a partition table, it's all good */
-  if (g_udev_device_has_property (object->device->udev_device, "ID_PART_TABLE_TYPE"))
+  if (g_udev_device_has_property (block_object->device->udev_device, "ID_PART_TABLE_TYPE"))
     {
       /* however, if blkid(8) also think that we're a filesystem... then don't
        * mark us as a partition table ... except if we are partitioned by the
@@ -469,9 +505,9 @@ partition_table_check (UDisksLinuxBlockObject *object)
        * (see filesystem_check() for the similar case where we don't pretend
        * to be a filesystem)
        */
-      if (g_strcmp0 (g_udev_device_get_property (object->device->udev_device, "ID_FS_USAGE"), "filesystem") == 0)
+      if (g_strcmp0 (g_udev_device_get_property (block_object->device->udev_device, "ID_FS_USAGE"), "filesystem") == 0)
         {
-          if (!disk_is_partitioned_by_kernel (object->device->udev_device))
+          if (!disk_is_partitioned_by_kernel (block_object->device->udev_device))
             {
               goto out;
             }
@@ -490,7 +526,7 @@ partition_table_check (UDisksLinuxBlockObject *object)
    * children... then it must be partitioned by the kernel, hence it
    * must contain a partition table.
    */
-  if (disk_is_partitioned_by_kernel (object->device->udev_device))
+  if (disk_is_partitioned_by_kernel (block_object->device->udev_device))
     {
       ret = TRUE;
       goto out;
@@ -501,35 +537,37 @@ partition_table_check (UDisksLinuxBlockObject *object)
 }
 
 static void
-partition_table_connect (UDisksLinuxBlockObject *object)
+partition_table_connect (UDisksObject *object)
 {
 }
 
-static void
-partition_table_update (UDisksLinuxBlockObject *object,
-                        const gchar            *uevent_action,
-                        GDBusInterface         *_iface)
+static gboolean
+partition_table_update (UDisksObject   *object,
+                        const gchar    *uevent_action,
+                        GDBusInterface *_iface)
 {
-  udisks_linux_partition_table_update (UDISKS_LINUX_PARTITION_TABLE (_iface), object);
+  udisks_linux_partition_table_update (UDISKS_LINUX_PARTITION_TABLE (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
-/* org.freedesktop.UDisks.Partition */
+/* org.freedesktop.UDisks2.Partition */
 
 static gboolean
-partition_check (UDisksLinuxBlockObject *object)
+partition_check (UDisksObject *object)
 {
+  UDisksLinuxBlockObject *block_object = UDISKS_LINUX_BLOCK_OBJECT (object);
   gboolean ret = FALSE;
 
   /* could be partitioned by the kernel */
-  if (g_strcmp0 (g_udev_device_get_devtype (object->device->udev_device), "partition") == 0)
+  if (g_strcmp0 (g_udev_device_get_devtype (block_object->device->udev_device), "partition") == 0)
     {
       ret = TRUE;
       goto out;
     }
 
   /* if blkid(8) already identified the device as a partition, it's all good */
-  if (g_udev_device_has_property (object->device->udev_device, "ID_PART_ENTRY_SCHEME"))
+  if (g_udev_device_has_property (block_object->device->udev_device, "ID_PART_ENTRY_SCHEME"))
     {
       ret = TRUE;
       goto out;
@@ -540,20 +578,21 @@ partition_check (UDisksLinuxBlockObject *object)
 }
 
 static void
-partition_connect (UDisksLinuxBlockObject *object)
+partition_connect (UDisksObject *object)
 {
 }
 
-static void
-partition_update (UDisksLinuxBlockObject *object,
-                  const gchar            *uevent_action,
-                  GDBusInterface         *_iface)
+static gboolean
+partition_update (UDisksObject   *object,
+                  const gchar    *uevent_action,
+                  GDBusInterface *_iface)
 {
-  udisks_linux_partition_update (UDISKS_LINUX_PARTITION (_iface), object);
+  udisks_linux_partition_update (UDISKS_LINUX_PARTITION (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
-/* org.freedesktop.UDisks.Filesystem */
+/* org.freedesktop.UDisks2.Filesystem */
 
 static gboolean
 drive_does_not_detect_media_change (UDisksLinuxBlockObject *object)
@@ -576,14 +615,15 @@ drive_does_not_detect_media_change (UDisksLinuxBlockObject *object)
 }
 
 static gboolean
-filesystem_check (UDisksLinuxBlockObject *object)
+filesystem_check (UDisksObject *object)
 {
+  UDisksLinuxBlockObject *block_object = UDISKS_LINUX_BLOCK_OBJECT (object);
   gboolean ret = FALSE;
   gboolean detected_as_filesystem = FALSE;
   UDisksMountType mount_type;
 
   /* if blkid(8) has detected the device as a filesystem, trust that */
-  if (g_strcmp0 (udisks_block_get_id_usage (object->iface_block_device), "filesystem") == 0)
+  if (g_strcmp0 (udisks_block_get_id_usage (block_object->iface_block_device), "filesystem") == 0)
     {
       detected_as_filesystem = TRUE;
       /* except, if we are a whole-disk device and the kernel has already partitioned us...
@@ -592,17 +632,17 @@ filesystem_check (UDisksLinuxBlockObject *object)
        * (see partition_table_check() above for the similar case where we don't pretend
        * to be a partition table)
        */
-      if (g_strcmp0 (g_udev_device_get_devtype (object->device->udev_device), "disk") == 0 &&
-          disk_is_partitioned_by_kernel (object->device->udev_device))
+      if (g_strcmp0 (g_udev_device_get_devtype (block_object->device->udev_device), "disk") == 0 &&
+          disk_is_partitioned_by_kernel (block_object->device->udev_device))
         {
           detected_as_filesystem = FALSE;
         }
     }
 
-  if (drive_does_not_detect_media_change (object) ||
+  if (drive_does_not_detect_media_change (block_object) ||
       detected_as_filesystem ||
-      (udisks_mount_monitor_is_dev_in_use (object->mount_monitor,
-                                           g_udev_device_get_device_number (object->device->udev_device),
+      (udisks_mount_monitor_is_dev_in_use (block_object->mount_monitor,
+                                           g_udev_device_get_device_number (block_object->device->udev_device),
                                            &mount_type) &&
        mount_type == UDISKS_MOUNT_TYPE_FILESYSTEM))
     ret = TRUE;
@@ -612,32 +652,34 @@ filesystem_check (UDisksLinuxBlockObject *object)
 
 
 static void
-filesystem_connect (UDisksLinuxBlockObject *object)
+filesystem_connect (UDisksObject *object)
 {
 }
 
-static void
-filesystem_update (UDisksLinuxBlockObject  *object,
-                   const gchar             *uevent_action,
-                   GDBusInterface          *_iface)
+static gboolean
+filesystem_update (UDisksObject   *object,
+                   const gchar    *uevent_action,
+                   GDBusInterface *_iface)
 {
-  udisks_linux_filesystem_update (UDISKS_LINUX_FILESYSTEM (_iface), object);
+  udisks_linux_filesystem_update (UDISKS_LINUX_FILESYSTEM (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
-/* org.freedesktop.UDisks.Swapspace */
+/* org.freedesktop.UDisks2.Swapspace */
 
 static gboolean
-swapspace_check (UDisksLinuxBlockObject *object)
+swapspace_check (UDisksObject *object)
 {
+  UDisksLinuxBlockObject *block_object = UDISKS_LINUX_BLOCK_OBJECT (object);
   gboolean ret;
   UDisksMountType mount_type;
 
   ret = FALSE;
-  if ((g_strcmp0 (udisks_block_get_id_usage (object->iface_block_device), "other") == 0 &&
-       g_strcmp0 (udisks_block_get_id_type (object->iface_block_device), "swap") == 0)
-      || (udisks_mount_monitor_is_dev_in_use (object->mount_monitor,
-                                              g_udev_device_get_device_number (object->device->udev_device),
+  if ((g_strcmp0 (udisks_block_get_id_usage (block_object->iface_block_device), "other") == 0 &&
+       g_strcmp0 (udisks_block_get_id_type (block_object->iface_block_device), "swap") == 0)
+      || (udisks_mount_monitor_is_dev_in_use (block_object->mount_monitor,
+                                              g_udev_device_get_device_number (block_object->device->udev_device),
                                               &mount_type)
           && mount_type == UDISKS_MOUNT_TYPE_SWAP))
     ret = TRUE;
@@ -646,75 +688,114 @@ swapspace_check (UDisksLinuxBlockObject *object)
 }
 
 static void
-swapspace_connect (UDisksLinuxBlockObject *object)
+swapspace_connect (UDisksObject *object)
 {
 }
 
-static void
-swapspace_update (UDisksLinuxBlockObject  *object,
-                  const gchar             *uevent_action,
-                  GDBusInterface          *_iface)
+static gboolean
+swapspace_update (UDisksObject   *object,
+                  const gchar    *uevent_action,
+                  GDBusInterface *_iface)
 {
-  udisks_linux_swapspace_update (UDISKS_LINUX_SWAPSPACE (_iface), object);
+  udisks_linux_swapspace_update (UDISKS_LINUX_SWAPSPACE (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
 
 static gboolean
-encrypted_check (UDisksLinuxBlockObject *object)
+encrypted_check (UDisksObject *object)
 {
+  UDisksLinuxBlockObject *block_object = UDISKS_LINUX_BLOCK_OBJECT (object);
   gboolean ret;
 
   ret = FALSE;
-  if (g_strcmp0 (udisks_block_get_id_usage (object->iface_block_device), "crypto") == 0 &&
-      g_strcmp0 (udisks_block_get_id_type (object->iface_block_device), "crypto_LUKS") == 0)
+  if (g_strcmp0 (udisks_block_get_id_usage (block_object->iface_block_device), "crypto") == 0 &&
+      g_strcmp0 (udisks_block_get_id_type (block_object->iface_block_device), "crypto_LUKS") == 0)
     ret = TRUE;
 
   return ret;
 }
 
 static void
-encrypted_connect (UDisksLinuxBlockObject *object)
+encrypted_connect (UDisksObject *object)
 {
 }
 
-static void
-encrypted_update (UDisksLinuxBlockObject  *object,
-                  const gchar             *uevent_action,
-                  GDBusInterface          *_iface)
+static gboolean
+encrypted_update (UDisksObject   *object,
+                  const gchar    *uevent_action,
+                  GDBusInterface *_iface)
 {
-  udisks_linux_encrypted_update (UDISKS_LINUX_ENCRYPTED (_iface), object);
+  udisks_linux_encrypted_update (UDISKS_LINUX_ENCRYPTED (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
 
 static gboolean
-loop_check (UDisksLinuxBlockObject *object)
+loop_check (UDisksObject *object)
 {
+  UDisksLinuxBlockObject *block_object = UDISKS_LINUX_BLOCK_OBJECT (object);
   gboolean ret;
 
   ret = FALSE;
-  if (g_str_has_prefix (g_udev_device_get_name (object->device->udev_device), "loop") &&
-      g_strcmp0 (g_udev_device_get_devtype (object->device->udev_device), "disk") == 0)
+  if (g_str_has_prefix (g_udev_device_get_name (block_object->device->udev_device), "loop") &&
+      g_strcmp0 (g_udev_device_get_devtype (block_object->device->udev_device), "disk") == 0)
     ret = TRUE;
 
   return ret;
 }
 
 static void
-loop_connect (UDisksLinuxBlockObject *object)
+loop_connect (UDisksObject *object)
 {
 }
 
-static void
-loop_update (UDisksLinuxBlockObject  *object,
-             const gchar             *uevent_action,
-             GDBusInterface          *_iface)
+static gboolean
+loop_update (UDisksObject   *object,
+             const gchar    *uevent_action,
+             GDBusInterface *_iface)
 {
-  udisks_linux_loop_update (UDISKS_LINUX_LOOP (_iface), object);
+  udisks_linux_loop_update (UDISKS_LINUX_LOOP (_iface), UDISKS_LINUX_BLOCK_OBJECT (object));
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
+
+static void
+free_module_interface_entry (ModuleInterfaceEntry *entry)
+{
+  if (entry->interface != NULL)
+    g_object_unref (entry->interface);
+  g_free (entry);
+}
+
+static void
+ensure_module_ifaces (UDisksLinuxBlockObject *object,
+                      UDisksModuleManager    *module_manager)
+{
+  GList *l;
+  ModuleInterfaceEntry *entry;
+  UDisksModuleInterfaceInfo *ii;
+
+  /* Assume all modules are either unloaded or loaded at the same time, so don't regenerate entries */
+  if (object->module_ifaces == NULL)
+    {
+      object->module_ifaces = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) free_module_interface_entry);
+
+      l = udisks_module_manager_get_block_object_iface_infos (module_manager);
+      for (; l; l = l->next)
+        {
+          ii = l->data;
+          entry = g_new0 (ModuleInterfaceEntry, 1);
+          entry->has_func = ii->has_func;
+          entry->connect_func = ii->connect_func;
+          entry->update_func = ii->update_func;
+          g_hash_table_replace (object->module_ifaces, GSIZE_TO_POINTER (ii->skeleton_type), entry);
+        }
+    }
+}
 
 /**
  * udisks_linux_block_object_uevent:
@@ -729,6 +810,11 @@ udisks_linux_block_object_uevent (UDisksLinuxBlockObject *object,
                                   const gchar            *action,
                                   UDisksLinuxDevice      *device)
 {
+  UDisksModuleManager *module_manager;
+  GHashTableIter iter;
+  gpointer key;
+  ModuleInterfaceEntry *entry;
+
   g_return_if_fail (UDISKS_IS_LINUX_BLOCK_OBJECT (object));
   g_return_if_fail (device == NULL || UDISKS_IS_LINUX_DEVICE (device));
 
@@ -739,20 +825,33 @@ udisks_linux_block_object_uevent (UDisksLinuxBlockObject *object,
       g_object_notify (G_OBJECT (object), "device");
     }
 
-  update_iface (object, action, block_device_check, block_device_connect, block_device_update,
+  update_iface (UDISKS_OBJECT (object), action, block_device_check, block_device_connect, block_device_update,
                 UDISKS_TYPE_LINUX_BLOCK, &object->iface_block_device);
-  update_iface (object, action, filesystem_check, filesystem_connect, filesystem_update,
+  update_iface (UDISKS_OBJECT (object), action, filesystem_check, filesystem_connect, filesystem_update,
                 UDISKS_TYPE_LINUX_FILESYSTEM, &object->iface_filesystem);
-  update_iface (object, action, swapspace_check, swapspace_connect, swapspace_update,
+  update_iface (UDISKS_OBJECT (object), action, swapspace_check, swapspace_connect, swapspace_update,
                 UDISKS_TYPE_LINUX_SWAPSPACE, &object->iface_swapspace);
-  update_iface (object, action, encrypted_check, encrypted_connect, encrypted_update,
+  update_iface (UDISKS_OBJECT (object), action, encrypted_check, encrypted_connect, encrypted_update,
                 UDISKS_TYPE_LINUX_ENCRYPTED, &object->iface_encrypted);
-  update_iface (object, action, loop_check, loop_connect, loop_update,
+  update_iface (UDISKS_OBJECT (object), action, loop_check, loop_connect, loop_update,
                 UDISKS_TYPE_LINUX_LOOP, &object->iface_loop);
-  update_iface (object, action, partition_table_check, partition_table_connect, partition_table_update,
+  update_iface (UDISKS_OBJECT (object), action, partition_table_check, partition_table_connect, partition_table_update,
                 UDISKS_TYPE_LINUX_PARTITION_TABLE, &object->iface_partition_table);
-  update_iface (object, action, partition_check, partition_connect, partition_update,
+  update_iface (UDISKS_OBJECT (object), action, partition_check, partition_connect, partition_update,
                 UDISKS_TYPE_LINUX_PARTITION, &object->iface_partition);
+
+  /* Attach interfaces from modules */
+  module_manager = udisks_daemon_get_module_manager (object->daemon);
+  if (udisks_module_manager_get_modules_available (module_manager))
+    {
+      ensure_module_ifaces (object, module_manager);
+      g_hash_table_iter_init (&iter, object->module_ifaces);
+      while (g_hash_table_iter_next (&iter, &key, (gpointer *) &entry))
+        {
+          update_iface (UDISKS_OBJECT (object), action, entry->has_func, entry->connect_func, entry->update_func,
+                        (GType) key, &entry->interface);
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------------------------------------- */

@@ -33,12 +33,20 @@
 static GMainLoop *loop = NULL;
 static gboolean opt_replace = FALSE;
 static gboolean opt_no_debug = FALSE;
+static gboolean opt_debug = FALSE;
 static gboolean opt_no_sigint = FALSE;
+static gboolean opt_disable_modules = FALSE;
+static gboolean opt_force_load_modules = FALSE;
+static gboolean opt_uninstalled = FALSE;
 static GOptionEntry opt_entries[] =
 {
   {"replace", 'r', 0, G_OPTION_ARG_NONE, &opt_replace, "Replace existing daemon", NULL},
-  {"no-debug", 'n', 0, G_OPTION_ARG_NONE, &opt_no_debug, "Don't print debug information on stdout/stderr", NULL},
+  {"no-debug", 'n', 0, G_OPTION_ARG_NONE, &opt_no_debug, "Don't print debug information on stdout/stderr (IGNORED, see '--debug')", NULL},
+  {"debug", 'd', 0, G_OPTION_ARG_NONE, &opt_debug, "Print debug information on stdout/stderr", NULL},
   {"no-sigint", 's', 0, G_OPTION_ARG_NONE, &opt_no_sigint, "Do not handle SIGINT for controlled shutdown", NULL},
+  {"disable-modules", 0, 0, G_OPTION_ARG_NONE, &opt_disable_modules, "Do not load modules even when asked for it", NULL},
+  {"force-load-modules", 0, 0, G_OPTION_ARG_NONE, &opt_force_load_modules, "Activate modules on startup", NULL},
+  {"uninstalled", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &opt_uninstalled, "Load modules from build directory", NULL},
   {NULL }
 };
 
@@ -49,7 +57,10 @@ on_bus_acquired (GDBusConnection *connection,
                  const gchar     *name,
                  gpointer         user_data)
 {
-  the_daemon = udisks_daemon_new (connection);
+  the_daemon = udisks_daemon_new (connection,
+                                  opt_disable_modules,
+                                  opt_force_load_modules,
+                                  opt_uninstalled);
   udisks_debug ("Connected to the system bus");
 }
 
@@ -60,7 +71,7 @@ on_name_lost (GDBusConnection *connection,
 {
   if (the_daemon == NULL)
     {
-      udisks_error ("Failed to connect to the system message bus");
+      udisks_critical ("Failed to connect to the system message bus");
     }
   else
     {
@@ -93,15 +104,12 @@ main (int    argc,
   GOptionContext *opt_context;
   gint ret;
   guint name_owner_id;
-  guint sigint_id;
+  GSource *sigint_source = NULL;
 
   ret = 1;
   loop = NULL;
   opt_context = NULL;
   name_owner_id = 0;
-  sigint_id = 0;
-
-  g_type_init ();
 
   /* avoid gvfs (http://bugzilla.gnome.org/show_bug.cgi?id=526454) */
   if (!g_setenv ("GIO_USE_VFS", "local", TRUE))
@@ -116,28 +124,19 @@ main (int    argc,
   if (!g_option_context_parse (opt_context, &argc, &argv, &error))
     {
       g_printerr ("Error parsing options: %s\n", error->message);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
-  /* TODO: this hammer is too big - it would be a lot better to configure the
-   *       logging routines and avoid printf(3) overhead and so on
-   */
   if (opt_no_debug)
     {
-      gint dev_null_fd;
-      dev_null_fd = open ("/dev/null", O_RDWR);
-      if (dev_null_fd >= 0)
-        {
-          dup2 (dev_null_fd, STDIN_FILENO);
-          dup2 (dev_null_fd, STDOUT_FILENO);
-          dup2 (dev_null_fd, STDERR_FILENO);
-          close (dev_null_fd);
-        }
-      else
-        {
-          udisks_warning ("Error opening /dev/null: %m");
-        }
+      udisks_warning ("The --no-debug option is deprecated and ignored. See '--help'.");
+    }
+  if (opt_debug)
+    {
+      /* tell GLib logging to not throw away DEBUG and INFO messages (for our
+         "udisks" domain) unless already specied somehow by the user */
+      g_setenv("G_MESSAGES_DEBUG", "udisks", FALSE);
     }
 
   if (g_getenv ("PATH") == NULL)
@@ -147,14 +146,15 @@ main (int    argc,
 
   loop = g_main_loop_new (NULL, FALSE);
 
-  sigint_id = 0;
   if (!opt_no_sigint)
     {
-      sigint_id = g_unix_signal_add_full (G_PRIORITY_DEFAULT,
+      guint sigint_id = g_unix_signal_add_full (G_PRIORITY_DEFAULT,
                                           SIGINT,
                                           on_sigint,
                                           NULL,  /* user_data */
                                           NULL); /* GDestroyNotify */
+      if (sigint_id)
+        sigint_source = g_main_context_find_source_by_id (NULL, sigint_id);
     }
 
   name_owner_id = g_bus_own_name (G_BUS_TYPE_SYSTEM,
@@ -175,8 +175,13 @@ main (int    argc,
   ret = 0;
 
  out:
-  if (sigint_id > 0)
-    g_source_remove (sigint_id);
+  if (sigint_source)
+    {
+      if(! g_source_is_destroyed(sigint_source))
+        {
+          g_source_destroy (sigint_source);
+        }
+    }
   if (the_daemon != NULL)
     g_object_unref (the_daemon);
   if (name_owner_id != 0)

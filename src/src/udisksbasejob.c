@@ -90,9 +90,9 @@ udisks_base_job_finalize (GObject *object)
 
 static void
 udisks_base_job_get_property (GObject    *object,
-                                  guint       prop_id,
-                                  GValue     *value,
-                                  GParamSpec *pspec)
+                              guint       prop_id,
+                              GValue     *value,
+                              GParamSpec *pspec)
 {
   UDisksBaseJob *job = UDISKS_BASE_JOB (object);
 
@@ -118,9 +118,9 @@ udisks_base_job_get_property (GObject    *object,
 
 static void
 udisks_base_job_set_property (GObject      *object,
-                                  guint         prop_id,
-                                  const GValue *value,
-                                  GParamSpec   *pspec)
+                              guint         prop_id,
+                              const GValue *value,
+                              GParamSpec   *pspec)
 {
   UDisksBaseJob *job = UDISKS_BASE_JOB (object);
 

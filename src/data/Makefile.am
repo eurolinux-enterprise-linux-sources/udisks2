@@ -6,7 +6,7 @@ dbusservice_in_files = org.freedesktop.UDisks2.service.in
 dbusservice_DATA     = $(dbusservice_in_files:.service.in=.service)
 
 $(dbusservice_DATA): $(dbusservice_in_files) Makefile
-	@sed -e "s|\@udisksdprivdir\@|$(prefix)/lib/udisks2|" $< > $@
+	@sed -e "s|\@udisksdprivdir\@|$(libexecdir)/udisks2|" $< > $@
 
 dbusconfdir = $(sysconfdir)/dbus-1/system.d
 dbusconf_in_files = org.freedesktop.UDisks2.conf.in
@@ -22,32 +22,36 @@ systemdservicedir       = $(systemdsystemunitdir)
 systemdservice_DATA     = $(systemdservice_in_files:.service.in=.service)
 
 $(systemdservice_DATA): $(systemdservice_in_files) Makefile
-	@sed -e "s|\@udisksdprivdir\@|$(prefix)/lib/udisks2|" $< > $@
+	@sed -e "s|\@udisksdprivdir\@|$(libexecdir)/udisks2|" $< > $@
 endif
 
 udevrulesdir = $(udevdir)/rules.d
 udevrules_DATA = 80-udisks2.rules
 
 polkitdir        = $(datadir)/polkit-1/actions
-polkit_in_files  = org.freedesktop.udisks2.policy.in
+polkit_in_files  = org.freedesktop.UDisks2.policy.in
 polkit_DATA      = $(polkit_in_files:.policy.in=.policy)
 
 completionsdir = $(datadir)/bash-completion/completions
-completions_DATA = 					\
-	completions/udisksctl				\
+completions_DATA =                                                             \
+	completions/udisksctl                                                  \
 	$(NULL)
 
 @INTLTOOL_POLICY_RULE@
 
-EXTRA_DIST = 						\
-	80-udisks2.rules				\
-	org.freedesktop.UDisks2.xml			\
-	$(systemdservice_in_files)			\
-	$(dbusservice_in_files)				\
-	$(dbusconf_in_files)				\
-	$(polkit_in_files)				\
-	$(completions_DATA)				\
+EXTRA_DIST =                                                                   \
+	80-udisks2.rules                                                       \
+	org.freedesktop.UDisks2.xml                                            \
+	$(systemdservice_in_files)                                             \
+	$(dbusservice_in_files)                                                \
+	$(dbusconf_in_files)                                                   \
+	$(polkit_in_files)                                                     \
+	$(completions_DATA)                                                    \
 	$(NULL)
 
-clean-local :
-	rm -f *~ $(dbusservice_DATA) $(dbusconf_DATA) $(systemdservice_DATA) $(polkit_DATA)
+clean-local:
+	rm -f *~                                                               \
+	$(dbusservice_DATA)                                                    \
+	$(dbusconf_DATA)                                                       \
+	$(systemdservice_DATA)                                                 \
+	$(polkit_DATA)

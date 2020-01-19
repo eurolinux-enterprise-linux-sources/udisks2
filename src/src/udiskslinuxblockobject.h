@@ -38,6 +38,7 @@ void                      udisks_linux_block_object_uevent     (UDisksLinuxBlock
                                                                 UDisksLinuxDevice       *device);
 UDisksDaemon             *udisks_linux_block_object_get_daemon (UDisksLinuxBlockObject  *object);
 UDisksLinuxDevice        *udisks_linux_block_object_get_device (UDisksLinuxBlockObject  *object);
+gchar                    *udisks_linux_block_object_get_device_file (UDisksLinuxBlockObject *object);
 
 void                      udisks_linux_block_object_trigger_uevent (UDisksLinuxBlockObject  *object);
 void                      udisks_linux_block_object_reread_partition_table (UDisksLinuxBlockObject *object);

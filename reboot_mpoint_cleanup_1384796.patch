@@ -1,0 +1,212 @@
+From 6121d5437d7800876567fd08b6020ca1d72eeaac Mon Sep 17 00:00:00 2001
+From: Vratislav Podzimek <vpodzime@redhat.com>
+Date: Fri, 20 Oct 2017 13:24:20 +0200
+Subject: [PATCH] Add and use a service for cleaning up mount point directories
+
+When udisks2 is used for mounting devices, it may need to create
+the mount point directory. If unmount happens later, udisks2
+cleans after itself and removes the mount point
+directory. However, if the unmount happens during reboot, the
+udisks2 daemon may already be terminated not having a chance to
+do the cleanup. We need a different mechanism to do the job in
+such cases.
+
+systemd provides us with such a mechanism so let's make use of
+it.
+
+Resolves: rhbz#1384796
+Signed-off-by: Vratislav Podzimek <vpodzime@redhat.com>
+---
+ data/Makefile.am                |  6 ++--
+ data/clean-mount-point@.service | 10 +++++++
+ packaging/udisks2.spec          |  1 +
+ src/Makefile.am                 |  3 +-
+ src/udiskslinuxfilesystem.c     | 61 +++++++++++++++++++++++++++++++++++++++--
+ 5 files changed, 74 insertions(+), 7 deletions(-)
+ create mode 100644 data/clean-mount-point@.service
+
+diff --git a/data/Makefile.am b/data/Makefile.am
+index 83af330..9b8073a 100644
+--- a/data/Makefile.am
++++ b/data/Makefile.am
+@@ -15,14 +15,14 @@ dbusconf_DATA = $(dbusconf_in_files:.conf.in=.conf)
+ $(dbusconf_DATA): $(dbusconf_in_files) Makefile
+ 	cp $< $@
+ 
+-systemdservice_in_files = udisks2.service.in
++systemdservice_in_files = udisks2.service.in clean-mount-point@.service
+ 
+ if HAVE_SYSTEMD
+ systemdservicedir       = $(systemdsystemunitdir)
+ systemdservice_DATA     = $(systemdservice_in_files:.service.in=.service)
+ 
+-$(systemdservice_DATA): $(systemdservice_in_files) Makefile
+-	@sed -e "s|\@udisksdprivdir\@|$(libexecdir)/udisks2|" $< > $@
++$(systemdservice_DATA): udisks2.service.in Makefile
++	@sed -e "s|\@udisksdprivdir\@|$(libexecdir)/udisks2|" udisks2.service.in > udisks2.service
+ endif
+ 
+ udevrulesdir = $(udevdir)/rules.d
+diff --git a/data/clean-mount-point@.service b/data/clean-mount-point@.service
+new file mode 100644
+index 0000000..83edceb
+--- /dev/null
++++ b/data/clean-mount-point@.service
+@@ -0,0 +1,10 @@
++[Unit]
++Description=Clean the %f mount point
++Before=%i.mount
++BindsTo=%i.mount
++DefaultDependencies=no
++
++[Service]
++Type=oneshot
++RemainAfterExit=true
++ExecStop=/bin/rm -fd %f
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 396ab4e..3b22cca 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -113,7 +113,8 @@ libudisks_daemon_la_LIBADD =                                                   \
+ 	$(GIO_LIBS)                                                            \
+ 	$(GMODULE_LIBS)                                                        \
+ 	$(GUDEV_LIBS)                                                          \
+-	$(BLOCKDEV_LIBS)                                                          \
++	$(BLOCKDEV_LIBS)                                                       \
++	-lbd_utils                                                             \
+ 	$(LIBATASMART_LIBS)                                                    \
+ 	$(POLKIT_GOBJECT_1_LIBS)                                               \
+ 	$(ACL_LIBS)                                                            \
+diff --git a/src/udiskslinuxfilesystem.c b/src/udiskslinuxfilesystem.c
+index 4cd2784..2910181 100644
+--- a/src/udiskslinuxfilesystem.c
++++ b/src/udiskslinuxfilesystem.c
+@@ -86,9 +86,11 @@ G_DEFINE_TYPE_WITH_CODE (UDisksLinuxFilesystem, udisks_linux_filesystem, UDISKS_
+                          G_IMPLEMENT_INTERFACE (UDISKS_TYPE_FILESYSTEM, filesystem_iface_init));
+ 
+ #ifdef HAVE_FHS_MEDIA
+-#  define MOUNT_BASE "/media"
++#define MOUNT_BASE "/media"
++#define MOUNT_BASE_PERSISTENT TRUE
+ #else
+-#  define MOUNT_BASE "/run/media"
++#define MOUNT_BASE "/run/media"
++#define MOUNT_BASE_PERSISTENT FALSE
+ #endif
+ 
+ /* ---------------------------------------------------------------------------------------------------- */
+@@ -833,6 +835,7 @@ add_acl (const gchar  *path,
+  * @gid: group id of the calling user
+  * @user_name: user name of the calling user
+  * @fs_type: The file system type to mount with
++ * @persistent: if the mount point is persistent (survives reboot) or not
+  * @error: Return location for error or %NULL.
+  *
+  * Calculates the mount point to use.
+@@ -846,6 +849,7 @@ calculate_mount_point (UDisksDaemon  *daemon,
+                        gid_t          gid,
+                        const gchar   *user_name,
+                        const gchar   *fs_type,
++                       gboolean      *persistent,
+                        GError       **error)
+ {
+   UDisksLinuxBlockObject *object = NULL;
+@@ -889,6 +893,7 @@ calculate_mount_point (UDisksDaemon  *daemon,
+   if (!fs_shared && (user_name != NULL && strstr (user_name, "/") == NULL))
+     {
+       mount_dir = g_strdup_printf (MOUNT_BASE "/%s", user_name);
++      *persistent = MOUNT_BASE_PERSISTENT;
+       if (!g_file_test (mount_dir, G_FILE_TEST_EXISTS))
+         {
+           /* First ensure that MOUNT_BASE exists */
+@@ -933,8 +938,10 @@ calculate_mount_point (UDisksDaemon  *daemon,
+         }
+     }
+   /* otherwise fall back to mounting in /media */
+-  if (mount_dir == NULL)
++  if (mount_dir == NULL) {
+     mount_dir = g_strdup ("/media");
++    *persistent = TRUE;
++  }
+ 
+   /* NOTE: UTF-8 has the nice property that valid UTF-8 strings only contains
+    *       the byte 0x2F if it's for the '/' character (U+002F SOLIDUS).
+@@ -1135,6 +1142,49 @@ is_system_managed (UDisksBlock  *block,
+   return ret;
+ }
+ 
++static void trigger_mpoint_cleanup (const gchar *mount_point)
++{
++  const gchar *argv[] = {"systemctl", "start", NULL, NULL};
++  GError *error = NULL;
++  gchar *escaped_mpoint = NULL;
++  gsize len = 0;
++
++  if (g_str_has_prefix (mount_point, "/"))
++    mount_point++;
++  else
++    udisks_warning ("Invalid mount point given to trigger_mpoint_cleanup(): %s",
++                    mount_point);
++
++  /* start with the mount point without the leading '/' */
++  escaped_mpoint = g_strdup (mount_point);
++
++  /* and replace all '/'s with '-'s */
++  for (gchar *letter = escaped_mpoint; *letter != '\0'; letter++, len++)
++    {
++      if (*letter == '/')
++        *letter = '-';
++    }
++
++  /* remove the potential trailing '-' (would happen if the given mount_point
++     has a trailing '/') */
++  if (escaped_mpoint[len - 1] == '-')
++    escaped_mpoint[len - 1] = '\0';
++
++  argv[2] = g_strdup_printf ("clean-mount-point@%s", escaped_mpoint);
++
++  if (!bd_utils_exec_and_report_error (argv, NULL, &error) && (error != NULL))
++    {
++      /* this is a best-effort mechanism, if it fails, just log warning and move
++         on */
++      udisks_warning ("Failed to setup systemd-based mount point cleanup: %s",
++                      error->message);
++      g_clear_error (&error);
++    }
++
++  g_free (escaped_mpoint);
++  g_free ((gchar *) argv[2]);
++}
++
+ /* ---------------------------------------------------------------------------------------------------- */
+ 
+ /* runs in thread dedicated to handling @invocation */
+@@ -1154,6 +1204,7 @@ handle_mount (UDisksFilesystem      *filesystem,
+   gchar *fs_type_to_use = NULL;
+   gchar *mount_options_to_use = NULL;
+   gchar *mount_point_to_use = NULL;
++  gboolean mpoint_persistent = TRUE;
+   gchar *fstab_mount_options = NULL;
+   gchar *caller_user_name = NULL;
+   GError *error = NULL;
+@@ -1443,6 +1494,7 @@ handle_mount (UDisksFilesystem      *filesystem,
+                                               caller_gid,
+                                               caller_user_name,
+                                               fs_type_to_use,
++                                              &mpoint_persistent,
+                                               &error);
+   if (mount_point_to_use == NULL)
+     {
+@@ -1487,6 +1539,9 @@ handle_mount (UDisksFilesystem      *filesystem,
+   else
+     udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+ 
++  if (mpoint_persistent)
++    trigger_mpoint_cleanup (mount_point_to_use);
++
+   /* update the mounted-fs file */
+   udisks_state_add_mounted_fs (state,
+                                mount_point_to_use,
+-- 
+2.9.5
+

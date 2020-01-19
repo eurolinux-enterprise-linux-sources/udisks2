@@ -34,6 +34,11 @@ UDisksEncrypted *udisks_linux_encrypted_new      (void);
 void             udisks_linux_encrypted_update   (UDisksLinuxEncrypted   *encrypted,
                                                   UDisksLinuxBlockObject *object);
 
+gboolean         udisks_linux_encrypted_lock     (UDisksLinuxEncrypted   *encrypted,
+                                                  GDBusMethodInvocation  *invocation,
+                                                  GVariant               *options,
+                                                  GError                **error);
+
 G_END_DECLS
 
 #endif /* __UDISKS_LINUX_ENCRYPTED_H__ */

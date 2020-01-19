@@ -33,6 +33,11 @@
 #include "udiskslinuxmanager.h"
 #include "udisksstate.h"
 #include "udiskslinuxdevice.h"
+#include "udisksmodulemanager.h"
+
+#include <modules/udisksmoduleifacetypes.h>
+#include <modules/udisksmoduleobject.h>
+
 
 /**
  * SECTION:udiskslinuxprovider
@@ -73,7 +78,14 @@ struct _UDisksLinuxProvider
   GHashTable *sysfs_path_to_mdraid;
   GHashTable *sysfs_path_to_mdraid_members;
 
+  /* maps from UDisksModuleObjectNewFuncs to nested hashtables containing object
+   * skeleton instances as keys and GLists of consumed sysfs path as values */
+  GHashTable *module_funcs_to_instances;
+
   GFileMonitor *etc_udisks2_dir_monitor;
+
+  /* Module interfaces list */
+  GList *module_ifaces;
 
   /* set to TRUE only in the coldplug phase */
   gboolean coldplug;
@@ -131,6 +143,7 @@ udisks_linux_provider_finalize (GObject *object)
   /* stop the request thread and wait for it */
   g_async_queue_push (provider->probe_request_queue, (gpointer) 0xdeadbeef);
   g_thread_join (provider->probe_request_thread);
+  g_thread_unref (provider->probe_request_thread);
   g_async_queue_unref (provider->probe_request_queue);
 
   daemon = udisks_provider_get_daemon (UDISKS_PROVIDER (provider));
@@ -149,7 +162,10 @@ udisks_linux_provider_finalize (GObject *object)
   g_hash_table_unref (provider->uuid_to_mdraid);
   g_hash_table_unref (provider->sysfs_path_to_mdraid);
   g_hash_table_unref (provider->sysfs_path_to_mdraid_members);
+  g_hash_table_unref (provider->module_funcs_to_instances);
   g_object_unref (provider->gudev_client);
+
+  g_list_free (provider->module_ifaces);
 
   udisks_object_skeleton_set_manager (provider->manager_object, NULL);
   g_object_unref (provider->manager_object);
@@ -298,11 +314,13 @@ udisks_linux_provider_init (UDisksLinuxProvider *provider)
     }
   g_object_unref (file);
 
+  provider->module_ifaces = NULL;
 }
 
 static void
-update_drive_with_id (UDisksLinuxProvider *provider,
-                      const gchar         *id)
+synthesize_uevent_for_id (UDisksLinuxProvider *provider,
+                          const gchar         *id,
+                          const gchar         *action)
 {
   GHashTableIter iter;
   UDisksLinuxDriveObject *drive_object;
@@ -316,12 +334,27 @@ update_drive_with_id (UDisksLinuxProvider *provider,
         {
           if (g_strcmp0 (udisks_drive_get_id (drive), id) == 0)
             {
-              //udisks_debug ("synthesizing change event on drive with id %s", id);
-              udisks_linux_drive_object_uevent (drive_object, "change", NULL);
+              udisks_debug ("synthesizing %s event on drive with id %s", action, id);
+              udisks_linux_drive_object_uevent (drive_object, action, NULL);
             }
           g_object_unref (drive);
         }
     }
+}
+
+static gchar *
+dup_id_from_config_name (const gchar *conf_filename)
+{
+  gchar *id;
+
+  udisks_debug ("Found config file %s", conf_filename);
+
+  if (g_str_has_suffix (conf_filename, ".conf"))
+    {
+      id = g_strndup (conf_filename, strlen (conf_filename) - 5);
+      return id;
+    }
+  return NULL;
 }
 
 static void
@@ -338,13 +371,10 @@ on_etc_udisks2_dir_monitor_changed (GFileMonitor     *monitor,
       event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT)
     {
       gchar *filename = g_file_get_basename (file);
-      if (g_str_has_suffix (filename, ".conf"))
-        {
-          gchar *id;
-          id = g_strndup (filename, strlen (filename) - strlen(".conf"));
-          update_drive_with_id (provider, id);
-          g_free (id);
-        }
+      gchar *id = dup_id_from_config_name (filename);
+      if (id)
+          synthesize_uevent_for_id (provider, id, "change");
+      g_free (id);
       g_free (filename);
     }
 }
@@ -385,31 +415,193 @@ udev_device_name_cmp (GUdevDevice *a,
   return device_name_cmp (g_udev_device_get_name (a), g_udev_device_get_name (b));
 }
 
+static GList *
+get_udisks_devices (UDisksLinuxProvider *provider)
+{
+  GList *devices;
+  GList *udisks_devices;
+  GList *l;
+
+  devices = g_udev_client_query_by_subsystem (provider->gudev_client, "block");
+
+  /* make sure we process sda before sdz and sdz before sdaa */
+  devices = g_list_sort (devices, (GCompareFunc) udev_device_name_cmp);
+
+  udisks_devices = NULL;
+  for (l = devices; l != NULL; l = l->next)
+    {
+      GUdevDevice *device = G_UDEV_DEVICE (l->data);
+      if (!g_udev_device_get_is_initialized (device))
+        continue;
+      udisks_devices = g_list_prepend (udisks_devices, udisks_linux_device_new_sync (device));
+    }
+  udisks_devices = g_list_reverse (udisks_devices);
+  g_list_free_full (devices, g_object_unref);
+
+  return udisks_devices;
+}
+
+static void
+do_coldplug (UDisksLinuxProvider *provider,
+             GList               *udisks_devices)
+{
+  GList *l;
+
+  for (l = udisks_devices; l != NULL; l = l->next)
+    {
+      UDisksLinuxDevice *device = l->data;
+      udisks_linux_provider_handle_uevent (provider, "add", device);
+    }
+}
+
+static void
+ensure_modules (UDisksLinuxProvider *provider)
+{
+  UDisksDaemon *daemon;
+  UDisksModuleManager *module_manager;
+  GDBusInterfaceSkeleton *iface;
+  UDisksModuleNewManagerIfaceFunc new_manager_iface_func;
+  GList *udisks_devices;
+  GList *l;
+  gboolean do_refresh = FALSE;
+  gboolean loaded;
+
+  daemon = udisks_provider_get_daemon (UDISKS_PROVIDER (provider));
+  module_manager = udisks_daemon_get_module_manager (daemon);
+
+  loaded = udisks_module_manager_get_modules_available (module_manager);
+
+  if (loaded)
+    {
+      /* Attach additional interfaces from modules. */
+      udisks_debug ("Modules loaded, attaching interfaces...");
+
+      l = udisks_module_manager_get_new_manager_iface_funcs (module_manager);
+      for (; l != NULL; l = l->next)
+        {
+          new_manager_iface_func = l->data;
+          iface = new_manager_iface_func (daemon);
+          if (iface != NULL)
+            {
+              g_dbus_object_skeleton_add_interface (G_DBUS_OBJECT_SKELETON (provider->manager_object), iface);
+              g_object_unref (iface);
+              do_refresh = TRUE;
+
+              provider->module_ifaces = g_list_append (provider->module_ifaces, iface);
+            }
+        }
+    }
+  else
+    {
+      /* Detach additional interfaces from modules. */
+      udisks_debug ("Modules unloading, detaching interfaces...");
+
+      l = provider->module_ifaces;
+      for (; l != NULL; l = l->next)
+        {
+          iface = l->data;
+          g_dbus_object_skeleton_remove_interface (G_DBUS_OBJECT_SKELETON (provider->manager_object), iface);
+
+          udisks_debug ("Interface removed");
+        }
+      g_list_free (provider->module_ifaces);
+      provider->module_ifaces = NULL;
+
+      /* Finish module unloading. */
+      udisks_module_manager_unload_modules (module_manager);
+
+      do_refresh = TRUE;
+    }
+
+  if (do_refresh)
+    {
+      /* Perform coldplug */
+      udisks_debug ("Performing coldplug...");
+
+      udisks_devices = get_udisks_devices (provider);
+      do_coldplug (provider, udisks_devices);
+      g_list_free_full (udisks_devices, g_object_unref);
+
+      udisks_debug ("Coldplug complete");
+    }
+}
+
+/**
+ * The logind's PrepareForSleep D-Bus signal handler. There is one boolean
+ * value in the 'parameters' GVariant tuple. When TRUE, the system is about to
+ * suspend/hibernate, when FALSE the system has just woken up. Since the ATA
+ * drives reset their configuration during suspend it needs to be re-read and
+ * applied again.
+ */
+static void
+on_system_sleep_signal (GDBusConnection *connection,
+                         const gchar *sender_name,
+                         const gchar *object_path,
+                         const gchar *interface_name,
+                         const gchar *signal_name,
+                         GVariant *parameters,
+                         gpointer user_data)
+{
+  UDisksLinuxProvider *provider = UDISKS_LINUX_PROVIDER (user_data);
+  GDir *etc_dir;
+  GError *error;
+  const gchar *filename;
+  GVariant *tmp_bool;
+  gboolean suspending;
+
+  if (g_variant_n_children(parameters) != 1)
+    {
+      udisks_warning("Error: incorrect number of parameters to resume signal handler");
+      return;
+    }
+  tmp_bool = g_variant_get_child_value (parameters, 0);
+  if (!g_variant_is_of_type (tmp_bool, G_VARIANT_TYPE_BOOLEAN))
+    {
+      udisks_warning("Error: incorrect parameter type of resume signal handler");
+      g_variant_unref (tmp_bool);
+      return;
+    }
+  suspending = g_variant_get_boolean (tmp_bool);
+  g_variant_unref (tmp_bool);
+  if (suspending)
+    return;
+
+  etc_dir = g_dir_open (PACKAGE_SYSCONF_DIR "/udisks2", 0, &error);
+  if (!etc_dir)
+    {
+      udisks_warning ("Error reading directory %s: %s (%s, %d)",
+                      PACKAGE_SYSCONF_DIR "/udisks2",
+                      error->message, g_quark_to_string (error->domain), error->code);
+      g_clear_error (&error);
+      return;
+    }
+
+  while ((filename = g_dir_read_name (etc_dir)))
+    if (g_str_has_suffix (filename, ".conf"))
+      {
+        gchar *id = dup_id_from_config_name (filename);
+        synthesize_uevent_for_id (provider, id, "reconfigure");
+        g_free (id);
+      }
+
+  g_dir_close (etc_dir);
+}
+
 static void
 udisks_linux_provider_start (UDisksProvider *_provider)
 {
   UDisksLinuxProvider *provider = UDISKS_LINUX_PROVIDER (_provider);
   UDisksDaemon *daemon;
   UDisksManager *manager;
-  GList *devices;
+  UDisksModuleManager *module_manager;
   GList *udisks_devices;
-  GList *l;
   guint n;
+  GDBusConnection *dbus_conn;
 
   provider->coldplug = TRUE;
 
   if (UDISKS_PROVIDER_CLASS (udisks_linux_provider_parent_class)->start != NULL)
     UDISKS_PROVIDER_CLASS (udisks_linux_provider_parent_class)->start (_provider);
-
-  daemon = udisks_provider_get_daemon (UDISKS_PROVIDER (provider));
-
-  provider->manager_object = udisks_object_skeleton_new ("/org/freedesktop/UDisks2/Manager");
-  manager = udisks_linux_manager_new (daemon);
-  udisks_object_skeleton_set_manager (provider->manager_object, manager);
-  g_object_unref (manager);
-
-  g_dbus_object_manager_server_export (udisks_daemon_get_object_manager (daemon),
-                                       G_DBUS_OBJECT_SKELETON (provider->manager_object));
 
   provider->sysfs_to_block = g_hash_table_new_full (g_str_hash,
                                                     g_str_equal,
@@ -435,33 +627,35 @@ udisks_linux_provider_start (UDisksProvider *_provider)
                                                                   g_str_equal,
                                                                   g_free,
                                                                   NULL);
+  provider->module_funcs_to_instances = g_hash_table_new_full (g_direct_hash,
+                                                               g_direct_equal,
+                                                               NULL,
+                                                               (GDestroyNotify) g_hash_table_unref);
 
-  devices = g_udev_client_query_by_subsystem (provider->gudev_client, "block");
+  daemon = udisks_provider_get_daemon (UDISKS_PROVIDER (provider));
 
-  /* make sure we process sda before sdz and sdz before sdaa */
-  devices = g_list_sort (devices, (GCompareFunc) udev_device_name_cmp);
+  provider->manager_object = udisks_object_skeleton_new ("/org/freedesktop/UDisks2/Manager");
+  manager = udisks_linux_manager_new (daemon);
+  udisks_object_skeleton_set_manager (provider->manager_object, manager);
+  g_object_unref (manager);
+
+  module_manager = udisks_daemon_get_module_manager (daemon);
+  g_signal_connect_swapped (module_manager, "notify::modules-ready", G_CALLBACK (ensure_modules), provider);
+  ensure_modules (provider);
+
+  g_dbus_object_manager_server_export (udisks_daemon_get_object_manager (daemon),
+                                       G_DBUS_OBJECT_SKELETON (provider->manager_object));
 
   /* probe for extra data we don't get from udev */
   udisks_info ("Initialization (device probing)");
-  udisks_devices = NULL;
-  for (l = devices; l != NULL; l = l->next)
-    {
-      GUdevDevice *device = G_UDEV_DEVICE (l->data);
-      udisks_devices = g_list_prepend (udisks_devices, udisks_linux_device_new_sync (device));
-    }
-  udisks_devices = g_list_reverse (udisks_devices);
+  udisks_devices = get_udisks_devices (provider);
 
   /* do two coldplug runs to handle dependencies between devices */
   for (n = 0; n < 2; n++)
     {
-      udisks_info ("Initialization (coldplug %d/2)", n + 1);
-      for (l = udisks_devices; l != NULL; l = l->next)
-        {
-          UDisksLinuxDevice *device = l->data;
-          udisks_linux_provider_handle_uevent (provider, "add", device);
-        }
+      udisks_info ("Initialization (coldplug %u/2)", n + 1);
+      do_coldplug (provider, udisks_devices);
     }
-  g_list_free_full (devices, g_object_unref);
   g_list_free_full (udisks_devices, g_object_unref);
   udisks_info ("Initialization complete");
 
@@ -491,6 +685,19 @@ udisks_linux_provider_start (UDisksProvider *_provider)
                     "entry-removed",
                     G_CALLBACK (crypttab_monitor_on_entry_removed),
                     provider);
+
+  /* The drive configurations need to be re-applied when system wakes up from suspend/hibernate */
+  dbus_conn = udisks_daemon_get_connection (daemon);
+  g_dbus_connection_signal_subscribe (dbus_conn,
+                                      "org.freedesktop.login1",         /* sender */
+                                      "org.freedesktop.login1.Manager", /* interface */
+                                      "PrepareForSleep",                /* signal */
+                                      "/org/freedesktop/login1",        /* object path */
+                                      NULL,                             /* arg0 */
+                                      G_DBUS_SIGNAL_FLAGS_NONE,         /* flags */
+                                      on_system_sleep_signal,           /* callback function */
+                                      provider,                         /* callback user data */
+                                      NULL);                            /* user data freeing func */
 }
 
 static void
@@ -556,12 +763,13 @@ udisks_linux_provider_get_coldplug (UDisksLinuxProvider *provider)
 
 /* ---------------------------------------------------------------------------------------------------- */
 
-static gboolean
-perform_initial_housekeeping_for_drive (GIOSchedulerJob *job,
-                                        GCancellable    *cancellable,
-                                        gpointer         user_data)
+static void
+perform_initial_housekeeping_for_drive (GTask           *task,
+                                        gpointer         source_object,
+                                        gpointer         task_data,
+                                        GCancellable    *cancellable)
 {
-  UDisksLinuxDriveObject *object = UDISKS_LINUX_DRIVE_OBJECT (user_data);
+  UDisksLinuxDriveObject *object = UDISKS_LINUX_DRIVE_OBJECT (task_data);
   GError *error;
 
   error = NULL;
@@ -572,9 +780,8 @@ perform_initial_housekeeping_for_drive (GIOSchedulerJob *job,
       udisks_warning ("Error performing initial housekeeping for drive %s: %s (%s, %d)",
                       g_dbus_object_get_object_path (G_DBUS_OBJECT (object)),
                       error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
+      g_clear_error (&error);
     }
-  return FALSE; /* job is complete */
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -620,6 +827,21 @@ handle_block_uevent_for_mdraid_with_uuid (UDisksLinuxProvider *provider,
   /* if uuid is NULL or bogus, consider it a remove event */
   if (uuid == NULL || g_strcmp0 (uuid, "00000000:00000000:00000000:00000000") == 0)
     action = "remove";
+  else
+    {
+      /* sometimes the bogus UUID looks legit, but it is still bogus. */
+      if (!is_member)
+        {
+          UDisksLinuxMDRaidObject *candidate = g_hash_table_lookup (provider->sysfs_path_to_mdraid, sysfs_path);
+          if (candidate != NULL &&
+              g_strcmp0 (uuid, udisks_linux_mdraid_object_get_uuid (candidate)) != 0)
+            {
+              udisks_debug ("UUID of %s became bogus (changed from %s to %s)",
+                            sysfs_path, udisks_linux_mdraid_object_get_uuid (candidate), uuid);
+              action = "remove";
+            }
+        }
+    }
 
   if (g_strcmp0 (action, "remove") == 0)
     {
@@ -695,7 +917,12 @@ handle_block_uevent_for_mdraid (UDisksLinuxProvider *provider,
    * UUID.
    */
   uuid = g_udev_device_get_property (device->udev_device, "UDISKS_MD_UUID");
+  if (! uuid)
+    uuid = g_udev_device_get_property (device->udev_device, "STORAGED_MD_UUID");
+
   member_uuid = g_udev_device_get_property (device->udev_device, "UDISKS_MD_MEMBER_UUID");
+  if (! member_uuid)
+    member_uuid = g_udev_device_get_property (device->udev_device, "STORAGED_MD_MEMBER_UUID");
 
   if (uuid != NULL)
     handle_block_uevent_for_mdraid_with_uuid (provider, action, device, uuid, FALSE);
@@ -717,6 +944,7 @@ handle_block_uevent_for_drive (UDisksLinuxProvider *provider,
 {
   UDisksLinuxDriveObject *object;
   UDisksDaemon *daemon;
+  GTask *task;
   const gchar *sysfs_path;
   gchar *vpd;
 
@@ -768,23 +996,25 @@ handle_block_uevent_for_drive (UDisksLinuxProvider *provider,
         }
       else
         {
-          object = udisks_linux_drive_object_new (daemon, device);
-          if (object != NULL)
+          if (g_strcmp0 (action, "add") == 0) /* don't create new drive object on "change" event */
             {
-              g_object_set_data_full (G_OBJECT (object), "x-vpd", g_strdup (vpd), g_free);
-              g_dbus_object_manager_server_export_uniquely (udisks_daemon_get_object_manager (daemon),
-                                                            G_DBUS_OBJECT_SKELETON (object));
-              g_hash_table_insert (provider->vpd_to_drive, g_strdup (vpd), object);
-              g_hash_table_insert (provider->sysfs_path_to_drive, g_strdup (sysfs_path), object);
-
-              /* schedule initial housekeeping for the drive unless coldplugging */
-              if (!provider->coldplug)
+              object = udisks_linux_drive_object_new (daemon, device);
+              if (object != NULL)
                 {
-                  g_io_scheduler_push_job (perform_initial_housekeeping_for_drive,
-                                           g_object_ref (object),
-                                           (GDestroyNotify) g_object_unref,
-                                           G_PRIORITY_DEFAULT,
-                                           NULL);
+                  g_object_set_data_full (G_OBJECT (object), "x-vpd", g_strdup (vpd), g_free);
+                  g_dbus_object_manager_server_export_uniquely (udisks_daemon_get_object_manager (daemon),
+                                                                G_DBUS_OBJECT_SKELETON (object));
+                  g_hash_table_insert (provider->vpd_to_drive, g_strdup (vpd), object);
+                  g_hash_table_insert (provider->sysfs_path_to_drive, g_strdup (sysfs_path), object);
+
+                  /* schedule initial housekeeping for the drive unless coldplugging */
+                  if (!provider->coldplug)
+                    {
+                      task = g_task_new (NULL, NULL, NULL, NULL);
+                      g_task_set_task_data (task, g_object_ref (object), NULL);
+                      g_task_run_in_thread (task, perform_initial_housekeeping_for_drive);
+                      g_object_unref (task);
+                    }
                 }
             }
         }
@@ -840,6 +1070,154 @@ handle_block_uevent_for_block (UDisksLinuxProvider *provider,
 
 /* called with lock held */
 static void
+handle_block_uevent_for_modules (UDisksLinuxProvider *provider,
+                                 const gchar         *action,
+                                 UDisksLinuxDevice   *device)
+{
+  const gchar *sysfs_path;
+  GDBusObjectSkeleton *object;
+  UDisksDaemon *daemon;
+  UDisksModuleManager *module_manager;
+  GList *new_funcs, *l, *ll;
+  UDisksModuleObjectNewFunc module_object_new_func;
+  GHashTable *inst_table;
+  GHashTableIter iter;
+  gboolean handled;
+  GHashTable *inst_sysfs_paths;
+  GList *instances_to_remove;
+  GList *funcs_to_remove = NULL;
+
+  daemon = udisks_provider_get_daemon (UDISKS_PROVIDER (provider));
+  module_manager = udisks_daemon_get_module_manager (daemon);
+  if (! udisks_module_manager_get_modules_available (module_manager))
+    return;
+
+  new_funcs = udisks_module_manager_get_module_object_new_funcs (module_manager);
+
+  /* The object hierarchy is as follows:
+   *
+   *   provider->module_funcs_to_instances:
+   *      key: a UDisksModuleObjectNewFunc (pointer)
+   *      value: nested hashtable
+   *          key: a UDisksObjectSkeleton instance implementing the UDisksModuleObject interface
+   *          value: nested hashtable
+   *              key: sysfs path attached to the UDisksObjectSkeleton instance
+   *              value: -- no values, just keys
+   */
+
+  sysfs_path = g_udev_device_get_sysfs_path (device->udev_device);
+
+  /* The following algorithm brings some guarantees to existing instances:
+   *  - every instance can claim one or more devices (sysfs paths)
+   *  - existing instances are asked first and only when none is interested in claiming the device
+   *    a new instance for the current UDisksModuleObjectNewFunc is attempted to be created
+   */
+
+  for (l = new_funcs; l; l = l->next)
+    {
+      handled = FALSE;
+      instances_to_remove = NULL;
+      module_object_new_func = l->data;
+      inst_table = g_hash_table_lookup (provider->module_funcs_to_instances, module_object_new_func);
+      if (inst_table)
+        {
+          /* First try existing instances and ask them to process the uevent */
+          g_hash_table_iter_init (&iter, inst_table);
+          while (g_hash_table_iter_next (&iter, (gpointer *) &object, (gpointer *) &inst_sysfs_paths))
+            {
+              if (udisks_module_object_process_uevent (UDISKS_MODULE_OBJECT (object), action, device))
+                {
+                  handled = TRUE;
+                  if (g_hash_table_contains (inst_sysfs_paths, sysfs_path))
+                    {
+                      /* sysfs paths match, the object has processed the event just fine */
+                    }
+                  else
+                    {
+                      /* sysfs paths don't match yet the foreign instance is interested in claiming the device */
+                      g_hash_table_add (inst_sysfs_paths, g_strdup (sysfs_path));
+                    }
+                }
+              else
+                {
+                  if (g_hash_table_contains (inst_sysfs_paths, sysfs_path))
+                    {
+                      /* sysfs paths match, the object has indicated it's no longer interested in the current sysfs path */
+                      g_warn_if_fail (g_hash_table_remove (inst_sysfs_paths, sysfs_path));
+                      if (g_hash_table_size (inst_sysfs_paths) == 0)
+                        {
+                          /* no more sysfs paths, queue for removal */
+                          instances_to_remove = g_list_append (instances_to_remove, object);
+                        }
+                      handled = TRUE;
+                     }
+                  else
+                    {
+                      /* the instance is not interested in claiming this device */
+                      ;
+                    }
+                }
+            }
+
+          /* Remove empty instances */
+          if (instances_to_remove != NULL)
+            {
+              for (ll = instances_to_remove; ll; ll = ll->next)
+                {
+                  object = ll->data;
+                  g_dbus_object_manager_server_unexport (udisks_daemon_get_object_manager (daemon),
+                                                         g_dbus_object_get_object_path (G_DBUS_OBJECT (object)));
+                  g_warn_if_fail (g_hash_table_remove (inst_table, object));
+                }
+              if (g_hash_table_size (inst_table) == 0)
+                {
+                  /* no more instances, queue for removal */
+                  funcs_to_remove = g_list_append (funcs_to_remove, module_object_new_func);
+                  inst_table = NULL;
+                }
+              g_list_free (instances_to_remove);
+            }
+        }
+
+      /* no instance claimed or no instance was interested in this sysfs path, try creating new instance for the current UDisksModuleObjectNewFunc */
+      if (! handled)
+        {
+          object = module_object_new_func (daemon, device);
+          if (object != NULL)
+            {
+              g_dbus_object_manager_server_export_uniquely (udisks_daemon_get_object_manager (daemon),
+                                                            G_DBUS_OBJECT_SKELETON (object));
+              inst_sysfs_paths = g_hash_table_new_full (g_str_hash,
+                                                        g_str_equal,
+                                                        (GDestroyNotify) g_free,
+                                                        NULL);
+              g_hash_table_add (inst_sysfs_paths, g_strdup (sysfs_path));
+              if (inst_table == NULL)
+                {
+                  inst_table = g_hash_table_new_full (g_direct_hash,
+                                                      g_direct_equal,
+                                                      (GDestroyNotify) g_object_unref,
+                                                      (GDestroyNotify) g_hash_table_unref);
+                  g_hash_table_insert (provider->module_funcs_to_instances, module_object_new_func, inst_table);
+                }
+              g_hash_table_insert (inst_table, object, inst_sysfs_paths);
+            }
+        }
+    }
+
+  /* Remove empty funcs */
+  if (funcs_to_remove != NULL)
+    {
+      for (ll = funcs_to_remove; ll; ll = ll->next)
+        g_warn_if_fail (g_hash_table_remove (provider->module_funcs_to_instances, ll->data));
+      g_list_free (funcs_to_remove);
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+/* called with lock held */
+static void
 handle_block_uevent (UDisksLinuxProvider *provider,
                      const gchar         *action,
                      UDisksLinuxDevice   *device)
@@ -858,6 +1236,7 @@ handle_block_uevent (UDisksLinuxProvider *provider,
       handle_block_uevent_for_block (provider, action, device);
       handle_block_uevent_for_drive (provider, action, device);
       handle_block_uevent_for_mdraid (provider, action, device);
+      handle_block_uevent_for_modules (provider, action, device);
     }
   else
     {
@@ -874,6 +1253,7 @@ handle_block_uevent (UDisksLinuxProvider *provider,
         }
       else
         {
+          handle_block_uevent_for_modules (provider, action, device);
           handle_block_uevent_for_mdraid (provider, action, device);
           handle_block_uevent_for_drive (provider, action, device);
           handle_block_uevent_for_block (provider, action, device);
@@ -939,7 +1319,50 @@ housekeeping_all_drives (UDisksLinuxProvider *provider,
           udisks_warning ("Error performing housekeeping for drive %s: %s (%s, %d)",
                           g_dbus_object_get_object_path (G_DBUS_OBJECT (object)),
                           error->message, g_quark_to_string (error->domain), error->code);
-          g_error_free (error);
+          g_clear_error (&error);
+        }
+    }
+
+  g_list_foreach (objects, (GFunc) g_object_unref, NULL);
+  g_list_free (objects);
+}
+
+/* Runs in housekeeping thread - called without lock held */
+static void
+housekeeping_all_modules (UDisksLinuxProvider *provider,
+                          guint                secs_since_last)
+{
+  GList *objects = NULL;
+  GList *l;
+  GHashTable *inst_table;
+  GHashTableIter iter_funcs, iter_inst;
+  GDBusObjectSkeleton *inst;
+
+  G_LOCK (provider_lock);
+  g_hash_table_iter_init (&iter_funcs, provider->module_funcs_to_instances);
+  while (g_hash_table_iter_next (&iter_funcs, NULL, (gpointer *) &inst_table))
+    {
+      g_hash_table_iter_init (&iter_inst, inst_table);
+      while (g_hash_table_iter_next (&iter_inst, (gpointer *) &inst, NULL))
+        objects = g_list_append (objects, g_object_ref (inst));
+    }
+  G_UNLOCK (provider_lock);
+
+  for (l = objects; l != NULL; l = l->next)
+    {
+      UDisksModuleObject *object = UDISKS_MODULE_OBJECT (l->data);
+      GError *error;
+
+      error = NULL;
+      if (! udisks_module_object_housekeeping (object,
+                                               secs_since_last,
+                                               NULL, /* TODO: cancellable */
+                                               &error))
+        {
+          udisks_warning ("Error performing housekeeping for module object %s: %s (%s, %d)",
+                          g_dbus_object_get_object_path (G_DBUS_OBJECT (object)),
+                          error->message, g_quark_to_string (error->domain), error->code);
+          g_clear_error (&error);
         }
     }
 
@@ -949,12 +1372,13 @@ housekeeping_all_drives (UDisksLinuxProvider *provider,
 
 /* ---------------------------------------------------------------------------------------------------- */
 
-static gboolean
-housekeeping_thread_func (GIOSchedulerJob *job,
-                          GCancellable    *cancellable,
-                          gpointer         user_data)
+static void
+housekeeping_thread_func (GTask           *task,
+                          gpointer         source_object,
+                          gpointer         task_data,
+                          GCancellable    *cancellable)
 {
-  UDisksLinuxProvider *provider = UDISKS_LINUX_PROVIDER (user_data);
+  UDisksLinuxProvider *provider = UDISKS_LINUX_PROVIDER (task_data);
   guint secs_since_last;
   guint64 now;
 
@@ -966,16 +1390,15 @@ housekeeping_thread_func (GIOSchedulerJob *job,
     secs_since_last = now - provider->housekeeping_last;
   provider->housekeeping_last = now;
 
-  udisks_info ("Housekeeping initiated (%d seconds since last housekeeping)", secs_since_last);
+  udisks_info ("Housekeeping initiated (%u seconds since last housekeeping)", secs_since_last);
 
   housekeeping_all_drives (provider, secs_since_last);
+  housekeeping_all_modules (provider, secs_since_last);
 
   udisks_info ("Housekeeping complete");
   G_LOCK (provider_lock);
   provider->housekeeping_running = FALSE;
   G_UNLOCK (provider_lock);
-
-  return FALSE; /* job is complete */
 }
 
 /* called from the main thread on start-up and every 10 minutes or so */
@@ -983,16 +1406,17 @@ static gboolean
 on_housekeeping_timeout (gpointer user_data)
 {
   UDisksLinuxProvider *provider = UDISKS_LINUX_PROVIDER (user_data);
+  GTask *task;
 
   G_LOCK (provider_lock);
   if (provider->housekeeping_running)
     goto out;
   provider->housekeeping_running = TRUE;
-  g_io_scheduler_push_job (housekeeping_thread_func,
-                           g_object_ref (provider),
-                           (GDestroyNotify) g_object_unref,
-                           G_PRIORITY_DEFAULT,
-                           NULL);
+  task = g_task_new (NULL, NULL, NULL, NULL);
+  g_task_set_task_data (task, g_object_ref (provider), NULL);
+  g_task_run_in_thread (task, housekeeping_thread_func);
+  g_object_unref (task);
+
  out:
   G_UNLOCK (provider_lock);
 

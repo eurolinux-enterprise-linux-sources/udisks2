@@ -2,22 +2,22 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>Authorization Checks</title>
-<meta name="generator" content="DocBook XSL Stylesheets V1.78.1">
+<title>Authorization Checks: UDisks Reference Manual</title>
+<meta name="generator" content="DocBook XSL Stylesheets Vsnapshot">
 <link rel="home" href="index.html" title="UDisks Reference Manual">
 <link rel="up" href="ref-dbus-overview.html" title="Overview">
 <link rel="prev" href="ref-dbus-jobs.html" title="The /org/freedesktop/UDisks2/jobs/* objects">
 <link rel="next" href="udisks-std-options.html" title="The options parameter">
-<meta name="generator" content="GTK-Doc V1.19 (XML mode)">
+<meta name="generator" content="GTK-Doc V1.25 (XML mode)">
 <link rel="stylesheet" href="style.css" type="text/css">
 </head>
 <body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF">
-<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="2"><tr valign="middle">
-<td><a accesskey="p" href="ref-dbus-jobs.html"><img src="left.png" width="24" height="24" border="0" alt="Prev"></a></td>
-<td><a accesskey="u" href="ref-dbus-overview.html"><img src="up.png" width="24" height="24" border="0" alt="Up"></a></td>
-<td><a accesskey="h" href="index.html"><img src="home.png" width="24" height="24" border="0" alt="Home"></a></td>
-<th width="100%" align="center">UDisks Reference Manual</th>
-<td><a accesskey="n" href="udisks-std-options.html"><img src="right.png" width="24" height="24" border="0" alt="Next"></a></td>
+<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="5"><tr valign="middle">
+<td width="100%" align="left" class="shortcuts"></td>
+<td><a accesskey="h" href="index.html"><img src="home.png" width="16" height="16" border="0" alt="Home"></a></td>
+<td><a accesskey="u" href="ref-dbus-overview.html"><img src="up.png" width="16" height="16" border="0" alt="Up"></a></td>
+<td><a accesskey="p" href="ref-dbus-jobs.html"><img src="left.png" width="16" height="16" border="0" alt="Prev"></a></td>
+<td><a accesskey="n" href="udisks-std-options.html"><img src="right.png" width="16" height="16" border="0" alt="Next"></a></td>
 </tr></table>
 <div class="sect1">
 <div class="titlepage"><div><div><h2 class="title" style="clear: both">
@@ -38,11 +38,11 @@
           the <a class="link" href="gdbus-org.freedesktop.UDisks2.Filesystem.html#gdbus-method-org-freedesktop-UDisks2-Filesystem.Mount" title="The Mount() method">Filesystem.Mount()</a>
           method call may check that the caller is authorized for one
           of the four actions
-          <span class="emphasis"><em>org.freedesktop.udisks2.filesystem-mount</em></span>,
-          <span class="emphasis"><em>org.freedesktop.udisks2.filesystem-mount-system</em></span>,
-          <span class="emphasis"><em>org.freedesktop.udisks2.filesystem-mount-other-seat</em></span>
+          <span class="emphasis"><em>org.freedesktop.UDisks2.filesystem-mount</em></span>,
+          <span class="emphasis"><em>org.freedesktop.UDisks2.filesystem-mount-system</em></span>,
+          <span class="emphasis"><em>org.freedesktop.UDisks2.filesystem-mount-other-seat</em></span>
           or
-          <span class="emphasis"><em>org.freedesktop.udisks2.filesystem-mount-fstab</em></span>
+          <span class="emphasis"><em>org.freedesktop.UDisks2.filesystem-mount-fstab</em></span>
           depending on circumstances.
         </p>
 <p>
@@ -70,14 +70,14 @@
           caller is authorized (note that each variable may not be set
           for request). For example, a polkit authorization rule for
           any of the
-          <span class="emphasis"><em>org.freedesktop.udisks2.filesystem-mount*</em></span>
+          <span class="emphasis"><em>org.freedesktop.UDisks2.filesystem-mount*</em></span>
           actions can use the <em class="parameter"><code>device</code></em> variable
           to determine if the caller is authorized to mount a specific
           block device.
         </p>
 <div class="table">
 <a name="udisks-polkit-details"></a><p class="title"><b>Table 1. Known polkit variables</b></p>
-<div class="table-contents"><table summary="Known polkit variables" border="1">
+<div class="table-contents"><table class="table" summary="Known polkit variables" border="1">
 <colgroup>
 <col>
 <col>
@@ -171,7 +171,7 @@
 </table></div>
 </div>
 <br class="table-break"><p>
-          For reference, the polkit actions defined by udisks 2.1.2
+          For reference, the polkit actions defined by udisks 2.7.3
 
           are included here:
           </p>
@@ -183,8 +183,8 @@
  "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd"&gt;
 
 &lt;policyconfig&gt;
-  &lt;vendor&gt;The udisks Project&lt;/vendor&gt;
-  &lt;vendor_url&gt;http://udisks.freedesktop.org/&lt;/vendor_url&gt;
+  &lt;vendor&gt;The Udisks Project&lt;/vendor&gt;
+  &lt;vendor_url&gt;https://github.com/storaged-project/udisks&lt;/vendor_url&gt;
   &lt;icon_name&gt;drive-removable-media&lt;/icon_name&gt;
 
   &lt;!-- ###################################################################### --&gt;
@@ -240,6 +240,19 @@
   &lt;action id="org.freedesktop.udisks2.filesystem-unmount-others"&gt;
     &lt;_description&gt;Unmount a device mounted by another user&lt;/_description&gt;
     &lt;_message&gt;Authentication is required to unmount a filesystem mounted by another user&lt;/_message&gt;
+    &lt;defaults&gt;
+      &lt;allow_any&gt;auth_admin&lt;/allow_any&gt;
+      &lt;allow_inactive&gt;auth_admin&lt;/allow_inactive&gt;
+      &lt;allow_active&gt;auth_admin_keep&lt;/allow_active&gt;
+    &lt;/defaults&gt;
+  &lt;/action&gt;
+
+  &lt;!-- ###################################################################### --&gt;
+  &lt;!-- Taking ownership of filesystems --&gt;
+
+  &lt;action id="org.freedesktop.udisks2.filesystem-take-ownership"&gt;
+    &lt;_description&gt;Take ownership of a filesystem&lt;/_description&gt;
+    &lt;_message&gt;Authentication is required to take ownership of a filesystem.&lt;/_message&gt;
     &lt;defaults&gt;
       &lt;allow_any&gt;auth_admin&lt;/allow_any&gt;
       &lt;allow_inactive&gt;auth_admin&lt;/allow_inactive&gt;
@@ -502,7 +515,7 @@
   &lt;!-- rescan a device --&gt;
   &lt;action id="org.freedesktop.udisks2.rescan"&gt;
     &lt;_description&gt;Rescan a device&lt;/_description&gt;
-    &lt;_message&gt;Authentication is to rescan a device&lt;/_message&gt;
+    &lt;_message&gt;Authentication is required to rescan a device&lt;/_message&gt;
     &lt;defaults&gt;
       &lt;allow_any&gt;auth_admin&lt;/allow_any&gt;
       &lt;allow_inactive&gt;auth_admin&lt;/allow_inactive&gt;
@@ -717,7 +730,6 @@
         </p>
 </div>
 <div class="footer">
-<hr>
-          Generated by GTK-Doc V1.19</div>
+<hr>Generated by GTK-Doc V1.25</div>
 </body>
 </html>

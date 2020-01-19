@@ -25,6 +25,7 @@
 #include <glib/gstdio.h>
 
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/loop.h>
@@ -36,6 +37,7 @@
 #include "udiskslogging.h"
 #include "udiskslinuxprovider.h"
 #include "udisksdaemonutil.h"
+#include "udiskslinuxencryptedhelpers.h"
 
 /**
  * SECTION:udisksstate
@@ -185,12 +187,11 @@ static void      udisks_state_check_mdraid        (UDisksState          *state,
 static GVariant *udisks_state_get                 (UDisksState          *state,
                                                    const gchar          *key,
                                                    const GVariantType   *type,
-                                                   GError              **error);
+                                                   gboolean             *error);
 static gboolean  udisks_state_set                 (UDisksState          *state,
                                                    const gchar          *key,
                                                    const GVariantType   *type,
-                                                   GVariant             *value,
-                                                   GError              **error);
+                                                   GVariant             *value);
 
 G_DEFINE_TYPE (UDisksState, udisks_state, G_TYPE_OBJECT);
 
@@ -530,7 +531,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
   const gchar *mount_point;
   GVariant *details;
   GVariant *block_device_value;
-  dev_t block_device;
+  dev_t block_device = 0;
   GVariant *fstab_mount_value;
   gboolean fstab_mount;
   gboolean keep;
@@ -569,7 +570,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
   if (block_device_value == NULL)
     {
       s = g_variant_print (value, TRUE);
-      udisks_error ("mounted-fs entry %s is invalid: no block-device key/value pair", s);
+      udisks_critical ("mounted-fs entry %s is invalid: no block-device key/value pair", s);
       g_free (s);
       attempt_no_cleanup = FALSE;
       goto out;
@@ -580,7 +581,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
   if (fstab_mount_value == NULL)
     {
       s = g_variant_print (value, TRUE);
-      udisks_error ("mounted-fs entry %s is invalid: no fstab-mount key/value pair", s);
+      udisks_critical ("mounted-fs entry %s is invalid: no fstab-mount key/value pair", s);
       g_free (s);
       attempt_no_cleanup = FALSE;
       goto out;
@@ -679,17 +680,17 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
     {
       if (!device_exists)
         {
-          udisks_notice ("Cleaning up mount point %s (device %d:%d no longer exist)",
+          udisks_notice ("Cleaning up mount point %s (device %u:%u no longer exist)",
                          mount_point, major (block_device), minor (block_device));
         }
       else if (device_to_be_cleaned)
         {
-          udisks_notice ("Cleaning up mount point %s (device %d:%d is about to be cleaned up)",
+          udisks_notice ("Cleaning up mount point %s (device %u:%u is about to be cleaned up)",
                          mount_point, major (block_device), minor (block_device));
         }
       else if (!is_mounted)
         {
-          udisks_notice ("Cleaning up mount point %s (device %d:%d is not mounted)",
+          udisks_notice ("Cleaning up mount point %s (device %u:%u is not mounted)",
                          mount_point, major (block_device), minor (block_device));
         }
 
@@ -713,7 +714,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
                                                       "umount -l %s",
                                                       escaped_mount_point))
             {
-              udisks_error ("Error cleaning up mount point %s: Error unmounting: %s",
+              udisks_critical ("Error cleaning up mount point %s: Error unmounting: %s",
                             mount_point, error_message);
               g_free (escaped_mount_point);
               g_free (error_message);
@@ -740,7 +741,7 @@ udisks_state_check_mounted_fs_entry (UDisksState  *state,
             {
               if (g_rmdir (mount_point) != 0)
                 {
-                  udisks_error ("Error cleaning up mount point %s: Error removing directory: %m",
+                  udisks_critical ("Error cleaning up mount point %s: Error removing directory: %m",
                                 mount_point);
                   /* keep the entry so we can clean it up later */
                   keep = TRUE;
@@ -772,23 +773,17 @@ udisks_state_check_mounted_fs (UDisksState *state,
   GVariant *value;
   GVariant *new_value;
   GVariantBuilder builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   changed = FALSE;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "mounted-fs",
-                            G_VARIANT_TYPE ("a{sa{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting mounted-fs: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{sa{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* check valid entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sa{sv}}"));
@@ -813,20 +808,10 @@ udisks_state_check_mounted_fs (UDisksState *state,
   /* save new entries */
   if (changed)
     {
-      error = NULL;
-      if (!udisks_state_set (state,
-                             "mounted-fs",
-                             G_VARIANT_TYPE ("a{sa{sv}}"),
-                             new_value, /* consumes new_value */
-                             &error))
-        {
-          udisks_warning ("Error setting mounted-fs: %s (%s, %d)",
-                          error->message,
-                          g_quark_to_string (error->domain),
-                          error->code);
-          g_error_free (error);
-          goto out;
-        }
+      udisks_state_set (state,
+                        "mounted-fs",
+                        G_VARIANT_TYPE ("a{sa{sv}}"),
+                        new_value /* consumes new_value */);
     }
   else
     {
@@ -862,7 +847,8 @@ udisks_state_add_mounted_fs (UDisksState    *state,
   GVariant *details_value;
   GVariantBuilder builder;
   GVariantBuilder details_builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   g_return_if_fail (UDISKS_IS_STATE (state));
   g_return_if_fail (mount_point != NULL);
@@ -870,18 +856,11 @@ udisks_state_add_mounted_fs (UDisksState    *state,
   g_mutex_lock (&state->lock);
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "mounted-fs",
-                            G_VARIANT_TYPE ("a{sa{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting mounted-fs: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{sa{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* start by including existing entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sa{sv}}"));
@@ -898,7 +877,7 @@ udisks_state_add_mounted_fs (UDisksState    *state,
           /* Skip/remove stale entries */
           if (g_strcmp0 (entry_mount_point, mount_point) == 0)
             {
-              udisks_warning ("Removing stale entry for mount point `%s' in /run/udisks2/mounted-fs file",
+              udisks_warning ("Removing stale entry for mount point `%s' in /run/udisks/mounted-fs file",
                               entry_mount_point);
             }
           else
@@ -934,18 +913,10 @@ udisks_state_add_mounted_fs (UDisksState    *state,
   new_value = g_variant_builder_end (&builder);
 
   /* save new entries */
-  error = NULL;
-  if (!udisks_state_set (state,
-                           "mounted-fs",
-                           G_VARIANT_TYPE ("a{sa{sv}}"),
-                           new_value, /* consumes new_value */
-                           &error))
-    {
-      udisks_warning ("Error setting mounted-fs: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+  udisks_state_set (state,
+                         "mounted-fs",
+                         G_VARIANT_TYPE ("a{sa{sv}}"),
+                         new_value /* consumes new_value */);
 
  out:
   g_mutex_unlock (&state->lock);
@@ -971,7 +942,7 @@ udisks_state_find_mounted_fs (UDisksState   *state,
 {
   gchar *ret;
   GVariant *value;
-  GError *error;
+  gboolean ok = FALSE;
 
   g_return_val_if_fail (UDISKS_IS_STATE (state), NULL);
 
@@ -981,18 +952,11 @@ udisks_state_find_mounted_fs (UDisksState   *state,
   value = NULL;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "mounted-fs",
-                            G_VARIANT_TYPE ("a{sa{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting mounted-fs: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{sa{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* look through list */
   if (value != NULL)
@@ -1105,7 +1069,7 @@ udisks_state_check_unlocked_luks_entry (UDisksState  *state,
   if (crypto_device_value == NULL)
     {
       s = g_variant_print (value, TRUE);
-      udisks_error ("unlocked-luks entry %s is invalid: no crypto-device key/value pair", s);
+      udisks_critical ("unlocked-luks entry %s is invalid: no crypto-device key/value pair", s);
       g_free (s);
       attempt_no_cleanup = TRUE;
       goto out;
@@ -1116,7 +1080,7 @@ udisks_state_check_unlocked_luks_entry (UDisksState  *state,
   if (dm_uuid_value == NULL)
     {
       s = g_variant_print (value, TRUE);
-      udisks_error ("unlocked-luks entry %s is invalid: no dm-uuid key/value pair", s);
+      udisks_critical ("unlocked-luks entry %s is invalid: no dm-uuid key/value pair", s);
       g_free (s);
       attempt_no_cleanup = TRUE;
       goto out;
@@ -1179,41 +1143,35 @@ udisks_state_check_unlocked_luks_entry (UDisksState  *state,
     {
       if (is_unlocked)
         {
-          gchar *escaped_device_file;
-          gchar *error_message;
+          LuksJobData data;
+          GError *error = NULL;
 
-          udisks_notice ("Cleaning up LUKS device %s (backing device %d:%d no longer exist)",
+          udisks_notice ("Cleaning up LUKS device %s (backing device %u:%u no longer exist)",
                          device_file_cleartext,
                          major (crypto_device), minor (crypto_device));
 
-          error_message = NULL;
-          escaped_device_file = udisks_daemon_util_escape_and_quote (device_file_cleartext);
-          if (!udisks_daemon_launch_spawned_job_sync (state->daemon,
-                                                      NULL, /* UDisksObject */
-                                                      "cleanup", 0, /* StartedByUID */
-                                                      NULL, /* GCancellable */
-                                                      0,    /* uid_t run_as_uid */
-                                                      0,    /* uid_t run_as_euid */
-                                                      NULL, /* gint *out_status */
-                                                      &error_message,
-                                                      NULL,  /* input_string */
-                                                      "cryptsetup luksClose %s",
-                                                      escaped_device_file))
+          data.map_name = device_file_cleartext;
+          if (!udisks_daemon_launch_threaded_job_sync (state->daemon,
+                                                       NULL, /* UDisksObject */
+                                                       "cleanup",
+                                                       0, /* StartedByUID */
+                                                       luks_close_job_func,
+                                                       &data,
+                                                       NULL, /* user_data_free_func */
+                                                       NULL, /* cancellable */
+                                                       &error))
             {
-              udisks_error ("Error cleaning up LUKS device %s: %s",
-                            device_file_cleartext, error_message);
-              g_free (escaped_device_file);
-              g_free (error_message);
+              udisks_critical ("Error cleaning up LUKS device %s: %s",
+                               device_file_cleartext, error->message);
+              g_clear_error (&error);
               /* keep the entry so we can clean it up later */
               keep = TRUE;
               goto out2;
             }
-          g_free (escaped_device_file);
-          g_free (error_message);
         }
       else
         {
-          udisks_notice ("LUKS device %d:%d was manually removed",
+          udisks_notice ("LUKS device %u:%u was manually removed",
                          major (cleartext_device), minor (cleartext_device));
         }
     }
@@ -1239,23 +1197,17 @@ udisks_state_check_unlocked_luks (UDisksState *state,
   GVariant *value;
   GVariant *new_value;
   GVariantBuilder builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   changed = FALSE;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "unlocked-luks",
-                            G_VARIANT_TYPE ("a{ta{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting unlocked-luks: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{ta{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* check valid entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ta{sv}}"));
@@ -1280,20 +1232,10 @@ udisks_state_check_unlocked_luks (UDisksState *state,
   /* save new entries */
   if (changed)
     {
-      error = NULL;
-      if (!udisks_state_set (state,
-                             "unlocked-luks",
-                             G_VARIANT_TYPE ("a{ta{sv}}"),
-                             new_value, /* consumes new_value */
-                             &error))
-        {
-          udisks_warning ("Error setting unlocked-luks: %s (%s, %d)",
-                          error->message,
-                          g_quark_to_string (error->domain),
-                          error->code);
-          g_error_free (error);
-          goto out;
-        }
+      udisks_state_set (state,
+                        "unlocked-luks",
+                        G_VARIANT_TYPE ("a{ta{sv}}"),
+                        new_value /* consumes new_value */);
     }
   else
     {
@@ -1329,7 +1271,8 @@ udisks_state_add_unlocked_luks (UDisksState  *state,
   GVariant *details_value;
   GVariantBuilder builder;
   GVariantBuilder details_builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   g_return_if_fail (UDISKS_IS_STATE (state));
   g_return_if_fail (dm_uuid != NULL);
@@ -1337,18 +1280,11 @@ udisks_state_add_unlocked_luks (UDisksState  *state,
   g_mutex_lock (&state->lock);
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "unlocked-luks",
-                            G_VARIANT_TYPE ("a{ta{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting unlocked-luks: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{ta{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* start by including existing entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ta{sv}}"));
@@ -1401,19 +1337,10 @@ udisks_state_add_unlocked_luks (UDisksState  *state,
   new_value = g_variant_builder_end (&builder);
 
   /* save new entries */
-  error = NULL;
-  if (!udisks_state_set (state,
+  udisks_state_set (state,
                          "unlocked-luks",
                          G_VARIANT_TYPE ("a{ta{sv}}"),
-                         new_value, /* consumes new_value */
-                         &error))
-    {
-      udisks_warning ("Error setting unlocked-luks: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
-
+                         new_value /* consumes new_value */);
  out:
   g_mutex_unlock (&state->lock);
 }
@@ -1436,7 +1363,7 @@ udisks_state_find_unlocked_luks (UDisksState   *state,
 {
   dev_t ret;
   GVariant *value;
-  GError *error;
+  gboolean ok = FALSE;
 
   g_return_val_if_fail (UDISKS_IS_STATE (state), 0);
 
@@ -1446,18 +1373,11 @@ udisks_state_find_unlocked_luks (UDisksState   *state,
   value = NULL;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "unlocked-luks",
-                            G_VARIANT_TYPE ("a{ta{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting unlocked-luks: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{ta{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* look through list */
   if (value != NULL)
@@ -1544,7 +1464,7 @@ udisks_state_check_loop_entry (UDisksState  *state,
     {
       gchar *s;
       s = g_variant_print (value, TRUE);
-      udisks_error ("loop entry %s is invalid: no backing-file key/value pair", s);
+      udisks_critical ("loop entry %s is invalid: no backing-file key/value pair", s);
       g_free (s);
       goto out;
     }
@@ -1618,23 +1538,17 @@ udisks_state_check_loop (UDisksState *state,
   GVariant *value;
   GVariant *new_value;
   GVariantBuilder builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   changed = FALSE;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "loop",
-                            G_VARIANT_TYPE ("a{sa{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting loop: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{sa{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* check valid entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sa{sv}}"));
@@ -1659,20 +1573,10 @@ udisks_state_check_loop (UDisksState *state,
   /* save new entries */
   if (changed)
     {
-      error = NULL;
-      if (!udisks_state_set (state,
-                             "loop",
-                             G_VARIANT_TYPE ("a{sa{sv}}"),
-                             new_value, /* consumes new_value */
-                             &error))
-        {
-          udisks_warning ("Error setting loop: %s (%s, %d)",
-                          error->message,
-                          g_quark_to_string (error->domain),
-                          error->code);
-          g_error_free (error);
-          goto out;
-        }
+      udisks_state_set (state,
+                        "loop",
+                        G_VARIANT_TYPE ("a{sa{sv}}"),
+                        new_value /* consumes new_value */);
     }
   else
     {
@@ -1708,7 +1612,8 @@ udisks_state_add_loop (UDisksState   *state,
   GVariant *details_value;
   GVariantBuilder builder;
   GVariantBuilder details_builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   g_return_if_fail (UDISKS_IS_STATE (state));
   g_return_if_fail (device_file != NULL);
@@ -1717,18 +1622,11 @@ udisks_state_add_loop (UDisksState   *state,
   g_mutex_lock (&state->lock);
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "loop",
-                            G_VARIANT_TYPE ("a{sa{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting loop: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{sa{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* start by including existing entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sa{sv}}"));
@@ -1780,21 +1678,85 @@ udisks_state_add_loop (UDisksState   *state,
   new_value = g_variant_builder_end (&builder);
 
   /* save new entries */
-  error = NULL;
-  if (!udisks_state_set (state,
-                         "loop",
-                         G_VARIANT_TYPE ("a{sa{sv}}"),
-                         new_value, /* consumes new_value */
-                         &error))
-    {
-      udisks_warning ("Error setting loop: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
-
+  udisks_state_set (state,
+                    "loop",
+                    G_VARIANT_TYPE ("a{sa{sv}}"),
+                    new_value /* consumes new_value */);
  out:
   g_mutex_unlock (&state->lock);
+}
+
+/**
+ * node_cb:
+ * @child:          Element in the list you are visiting
+ * @compare_data:   Data used for comparison
+ * @user_data:      Data supplied by call to iterate list
+ *
+ * Returns: %TRUE if the iteration should stop, else %FALSE
+ */
+typedef gboolean (*node_cb)(GVariant *child, gpointer compare_data,
+                            gpointer user_data);
+
+
+/**
+ * iterate_list:
+ * @list:           The list to iterate over
+ * @visit:          The function called on each element in the list
+ * @compare_data:   Data used for comparison
+ * @user_data:      Pointer to user supplied data
+ *
+ * Returns: %TRUE if iteration was stopped by node_cb, else %FALSE
+ */
+static gboolean
+iterate_list (GVariant *list, node_cb visit, gpointer compare_data,
+              gpointer user_data)
+{
+  gboolean rc = FALSE;
+  GVariantIter iter;
+  GVariant *child = NULL;
+
+  if (!list)
+    return rc;
+
+  g_variant_iter_init (&iter, list);
+
+  while (!rc && ((child = g_variant_iter_next_value (&iter)) != NULL))
+    {
+      rc = visit (child, compare_data, user_data);
+      g_variant_unref (child);
+    }
+
+  return rc;
+}
+
+static gboolean
+_udisks_state_has_loop_list_visitor (GVariant *child, gpointer compare_data,
+                                     gpointer user_data )
+{
+  gboolean ret = FALSE;
+  const gchar *iter_device_file = NULL;
+  GVariant *details = NULL;
+  uid_t *out_uid = (uid_t *) user_data;
+
+  g_variant_get (child, "{&s@a{sv}}", &iter_device_file, &details);
+
+  if (g_strcmp0 (iter_device_file, ((gchar*)compare_data)) == 0)
+    {
+      if (out_uid != NULL)
+        {
+          GVariant *lookup_value;
+          lookup_value = lookup_asv (details, "setup-by-uid");
+          *out_uid = 0;
+          if (lookup_value != NULL)
+            {
+              *out_uid = g_variant_get_uint32 (lookup_value);
+              g_variant_unref (lookup_value);
+            }
+        }
+    }
+    g_variant_unref (details);
+
+    return ret;
 }
 
 /**
@@ -1815,7 +1777,7 @@ udisks_state_has_loop (UDisksState   *state,
 {
   gboolean ret;
   GVariant *value;
-  GError *error;
+  gboolean ok = FALSE;
 
   g_return_val_if_fail (UDISKS_IS_STATE (state), FALSE);
 
@@ -1825,61 +1787,17 @@ udisks_state_has_loop (UDisksState   *state,
   value = NULL;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "loop",
-                            G_VARIANT_TYPE ("a{sa{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting loop: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
-
-  /* look through list */
-  if (value != NULL)
-    {
-      GVariantIter iter;
-      GVariant *child;
-      g_variant_iter_init (&iter, value);
-      while ((child = g_variant_iter_next_value (&iter)) != NULL)
-        {
-          const gchar *iter_device_file;
-          GVariant *details;
-
-          g_variant_get (child,
-                         "{&s@a{sv}}",
-                         &iter_device_file,
-                         &details);
-
-          if (g_strcmp0 (iter_device_file, device_file) == 0)
-            {
-              ret = TRUE;
-              if (out_uid != NULL)
-                {
-                  GVariant *lookup_value;
-                  lookup_value = lookup_asv (details, "setup-by-uid");
-                  *out_uid = 0;
-                  if (lookup_value != NULL)
-                    {
-                      *out_uid = g_variant_get_uint32 (lookup_value);
-                      g_variant_unref (lookup_value);
-                    }
-                }
-              g_variant_unref (details);
-              g_variant_unref (child);
-              goto out;
-            }
-          g_variant_unref (details);
-          g_variant_unref (child);
-        }
-    }
-
- out:
-  if (value != NULL)
-    g_variant_unref (value);
+                            G_VARIANT_TYPE ("a{sa{sv}}"), &ok);
+  if (ok && value)
+   {
+      ret = iterate_list (value,
+                          _udisks_state_has_loop_list_visitor,
+                          (gpointer) device_file, (gpointer) out_uid);
+      g_variant_unref (value);
+   }
+    
   g_mutex_unlock (&state->lock);
   return ret;
 }
@@ -1911,13 +1829,13 @@ udisks_state_check_mdraid_entry (UDisksState  *state,
   device = g_udev_client_query_by_device_number (udev_client, G_UDEV_DEVICE_TYPE_BLOCK, raid_device);
   if (device == NULL)
     {
-      udisks_info ("no udev device for raid device %d:%d", major (raid_device), minor (raid_device));
+      udisks_info ("no udev device for raid device %u:%u", major (raid_device), minor (raid_device));
       goto out;
     }
   array_state = g_udev_device_get_sysfs_attr (device, "md/array_state");
   if (array_state == NULL)
     {
-      udisks_info ("raid device %d:%d is not setup  (no md/array_state sysfs file)",
+      udisks_info ("raid device %u:%u is not setup  (no md/array_state sysfs file)",
                    major (raid_device), minor (raid_device));
       goto out;
     }
@@ -1945,7 +1863,7 @@ udisks_state_check_mdraid_entry (UDisksState  *state,
 
   if (!keep)
     {
-      udisks_notice ("No longer watching mdraid device %d:%d", major (raid_device), minor (raid_device));
+      udisks_notice ("No longer watching mdraid device %u:%u", major (raid_device), minor (raid_device));
     }
 
  out2:
@@ -1964,23 +1882,17 @@ udisks_state_check_mdraid (UDisksState *state,
   GVariant *value;
   GVariant *new_value;
   GVariantBuilder builder;
-  GError *error;
+
+  gboolean ok = FALSE;
 
   changed = FALSE;
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "mdraid",
-                            G_VARIANT_TYPE ("a{ta{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting mdraid: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{ta{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* check valid entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ta{sv}}"));
@@ -2005,20 +1917,10 @@ udisks_state_check_mdraid (UDisksState *state,
   /* save new entries */
   if (changed)
     {
-      error = NULL;
-      if (!udisks_state_set (state,
-                             "mdraid",
-                             G_VARIANT_TYPE ("a{ta{sv}}"),
-                             new_value, /* consumes new_value */
-                             &error))
-        {
-          udisks_warning ("Error setting mdraid: %s (%s, %d)",
-                          error->message,
-                          g_quark_to_string (error->domain),
-                          error->code);
-          g_error_free (error);
-          goto out;
-        }
+      udisks_state_set (state,
+                        "mdraid",
+                        G_VARIANT_TYPE ("a{ta{sv}}"),
+                        new_value /* consumes new_value */);
     }
   else
     {
@@ -2048,25 +1950,18 @@ udisks_state_add_mdraid (UDisksState   *state,
   GVariant *details_value;
   GVariantBuilder builder;
   GVariantBuilder details_builder;
-  GError *error;
+  gboolean ok = FALSE;
 
   g_return_if_fail (UDISKS_IS_STATE (state));
 
   g_mutex_lock (&state->lock);
 
   /* load existing entries */
-  error = NULL;
   value = udisks_state_get (state,
                             "mdraid",
-                            G_VARIANT_TYPE ("a{ta{sv}}"),
-                            &error);
-  if (error != NULL)
-    {
-      udisks_warning ("Error getting mdraid: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                            G_VARIANT_TYPE ("a{ta{sv}}"), &ok);
+  if (!ok)
+    goto out;
 
   /* start by including existing entries */
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ta{sv}}"));
@@ -2082,8 +1977,8 @@ udisks_state_add_mdraid (UDisksState   *state,
           /* Skip/remove stale entries */
           if (entry_raid_device == raid_device)
             {
-              udisks_warning ("Removing stale entry for raid device %d:%d in /run/udisks2/mdraid file",
-                              major (raid_device), minor (raid_device));
+              udisks_warning ("Removing stale entry for raid device %u:%u in /run/udisks2/mdraid file",
+                                major (raid_device), minor (raid_device));
             }
           else
             {
@@ -2110,21 +2005,44 @@ udisks_state_add_mdraid (UDisksState   *state,
   new_value = g_variant_builder_end (&builder);
 
   /* save new entries */
-  error = NULL;
-  if (!udisks_state_set (state,
+  udisks_state_set (state,
                          "mdraid",
                          G_VARIANT_TYPE ("a{ta{sv}}"),
-                         new_value, /* consumes new_value */
-                         &error))
-    {
-      udisks_warning ("Error setting mdraid: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-      goto out;
-    }
+                         new_value /* consumes new_value */);
 
  out:
   g_mutex_unlock (&state->lock);
+}
+
+static gboolean
+_udisks_state_has_mdraid_list_visitor (GVariant *child, gpointer compare_data,
+                                       gpointer user_data )
+{
+  gboolean ret = FALSE;
+  guint64 iter_raid_device;
+  GVariant *details;
+  dev_t *raid_device = (dev_t*) compare_data;
+  uid_t *out_uid = (uid_t*) user_data;
+
+  g_variant_get (child, "{t@a{sv}}", &iter_raid_device, &details);
+
+  if (iter_raid_device == *raid_device)
+    {
+      ret = TRUE;
+      if (out_uid != NULL)
+        {
+          GVariant *lookup_value;
+          lookup_value = lookup_asv (details, "started-by-uid");
+          *out_uid = 0;
+          if (lookup_value != NULL)
+            {
+              *out_uid = g_variant_get_uint32 (lookup_value);
+              g_variant_unref (lookup_value);
+            }
+        }
+      g_variant_unref (details);
+    }
+  return ret;
 }
 
 /**
@@ -2145,7 +2063,7 @@ udisks_state_has_mdraid (UDisksState   *state,
 {
   gboolean ret = FALSE;
   GVariant *value = NULL;
-  GError *error = NULL;
+  gboolean ok = FALSE;
 
   g_return_val_if_fail (UDISKS_IS_STATE (state), FALSE);
 
@@ -2154,58 +2072,14 @@ udisks_state_has_mdraid (UDisksState   *state,
   /* load existing entries */
   value = udisks_state_get (state,
                             "mdraid",
-                            G_VARIANT_TYPE ("a{ta{sv}}"),
-                            &error);
-  if (error != NULL)
+                            G_VARIANT_TYPE ("a{ta{sv}}"), &ok);
+  if (ok && value)
     {
-      udisks_warning ("Error getting mdraid: %s (%s, %d)",
-                      error->message, g_quark_to_string (error->domain), error->code);
-      g_clear_error (&error);
-      goto out;
+      ret = iterate_list (value, _udisks_state_has_mdraid_list_visitor,
+                          (gpointer) &raid_device, (gpointer) out_uid);
+      g_variant_unref (value);
     }
 
-  /* look through list */
-  if (value != NULL)
-    {
-      GVariantIter iter;
-      GVariant *child;
-      g_variant_iter_init (&iter, value);
-      while ((child = g_variant_iter_next_value (&iter)) != NULL)
-        {
-          guint64 iter_raid_device;
-          GVariant *details;
-
-          g_variant_get (child,
-                         "{t@a{sv}}",
-                         &iter_raid_device,
-                         &details);
-
-          if (iter_raid_device == raid_device)
-            {
-              ret = TRUE;
-              if (out_uid != NULL)
-                {
-                  GVariant *lookup_value;
-                  lookup_value = lookup_asv (details, "started-by-uid");
-                  *out_uid = 0;
-                  if (lookup_value != NULL)
-                    {
-                      *out_uid = g_variant_get_uint32 (lookup_value);
-                      g_variant_unref (lookup_value);
-                    }
-                }
-              g_variant_unref (details);
-              g_variant_unref (child);
-              goto out;
-            }
-          g_variant_unref (details);
-          g_variant_unref (child);
-        }
-    }
-
- out:
-  if (value != NULL)
-    g_variant_unref (value);
   g_mutex_unlock (&state->lock);
   return ret;
 }
@@ -2216,7 +2090,7 @@ static GVariant *
 udisks_state_get (UDisksState           *state,
                   const gchar           *key,
                   const GVariantType    *type,
-                  GError               **error)
+                  gboolean              *ok)
 {
   gchar *path = NULL;
   GVariant *ret = NULL;
@@ -2224,10 +2098,12 @@ udisks_state_get (UDisksState           *state,
   GError *local_error = NULL;
   gsize length = 0;
 
+  *ok = TRUE;
+
   g_return_val_if_fail (UDISKS_IS_STATE (state), NULL);
   g_return_val_if_fail (key != NULL, NULL);
   g_return_val_if_fail (g_variant_type_is_definite (type), NULL);
-  g_return_val_if_fail (error == NULL || *error == NULL, NULL);
+  g_return_val_if_fail (ok != NULL, NULL);
 
   /* TODO:
    *
@@ -2235,7 +2111,14 @@ udisks_state_get (UDisksState           *state,
    * - could also mmap the file
    */
 
-  path = g_strdup_printf ("/run/udisks2/%s", key);
+#ifdef HAVE_FHS_MEDIA
+  /* /media usually isn't on a tmpfs, so we need to make this persistant */
+  if (strcmp (key, "mounted-fs") == 0)
+    path = g_strdup_printf (PACKAGE_LOCALSTATE_DIR "/lib/udisks2/%s", key);
+  else
+#endif
+    path = g_strdup_printf ("/run/udisks2/%s", key);
+
 
   /* see if it's already in the cache */
   ret = g_hash_table_lookup (state->cache, path);
@@ -2256,7 +2139,14 @@ udisks_state_get (UDisksState           *state,
           g_clear_error (&local_error);
           goto out;
         }
-      g_propagate_error (error, local_error);
+
+      *ok = FALSE;
+      udisks_warning ("Error getting %s: %s (%s, %d)",
+                      key,
+                      local_error->message,
+                      g_quark_to_string (local_error->domain),
+                      local_error->code);
+      g_clear_error (&local_error);
       goto out;
     }
 
@@ -2280,20 +2170,19 @@ static gboolean
 udisks_state_set (UDisksState          *state,
                   const gchar          *key,
                   const GVariantType   *type,
-                  GVariant             *value,
-                  GError              **error)
+                  GVariant             *value)
 {
   gboolean ret = FALSE;
   gsize size = 0;
   gchar *path = NULL;
   gchar *data= NULL;
   GVariant *normalized = NULL;
+  GError *error = NULL;
 
   g_return_val_if_fail (UDISKS_IS_STATE (state), FALSE);
   g_return_val_if_fail (key != NULL, FALSE);
   g_return_val_if_fail (g_variant_type_is_definite (type), FALSE);
   g_return_val_if_fail (g_variant_is_of_type (value, type), FALSE);
-  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
 
   g_variant_ref_sink (value);
   normalized = g_variant_get_normal_form (value);
@@ -2301,15 +2190,28 @@ udisks_state_set (UDisksState          *state,
   data = g_malloc (size);
   g_variant_store (normalized, data);
 
-  path = g_strdup_printf ("/run/udisks2/%s", key);
+#ifdef HAVE_FHS_MEDIA
+  /* /media usually isn't on a tmpfs, so we need to make this persistant */
+  if (strcmp (key, "mounted-fs") == 0)
+    path = g_strdup_printf (PACKAGE_LOCALSTATE_DIR "/lib/udisks2/%s", key);
+  else
+#endif
+    path = g_strdup_printf ("/run/udisks2/%s", key);
 
   g_hash_table_insert (state->cache, g_strdup (path), g_variant_ref (value));
 
   if (!g_file_set_contents (path,
                             data,
                             size,
-                            error))
-    goto out;
+                            &error))
+    {
+      udisks_warning ("Error setting %s: %s (%s, %d)", key,
+                     error->message,
+                     g_quark_to_string (error->domain),
+                     error->code);
+      g_clear_error (&error);
+      goto out;
+    }
 
   ret = TRUE;
 

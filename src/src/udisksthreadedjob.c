@@ -98,7 +98,7 @@ udisks_threaded_job_finalize (GObject *object)
   UDisksThreadedJob *job = UDISKS_THREADED_JOB (object);
 
   if (job->job_error != NULL)
-    g_error_free (job->job_error);
+    g_clear_error (&(job->job_error));
 
   if (job->user_data_free_func != NULL)
     job->user_data_free_func (job->user_data);
@@ -186,14 +186,13 @@ job_complete (gpointer user_data)
   return FALSE;
 }
 
-static gboolean
-run_io_scheduler_job (GIOSchedulerJob  *io_scheduler_job,
-                      GCancellable     *cancellable,
-                      gpointer          user_data)
+static void
+run_task_job (GTask            *task,
+              gpointer          source_object,
+              gpointer          task_data,
+              GCancellable     *cancellable)
 {
-  UDisksThreadedJob *job = UDISKS_THREADED_JOB (user_data);
-
-  /* TODO: probably want to create a GMainContext dedicated to the thread */
+  UDisksThreadedJob *job = UDISKS_THREADED_JOB (task_data);
 
   g_assert (!job->job_result);
   g_assert_no_error (job->job_error);
@@ -206,28 +205,16 @@ run_io_scheduler_job (GIOSchedulerJob  *io_scheduler_job,
                                        &job->job_error);
     }
 
-  g_io_scheduler_job_send_to_mainloop (io_scheduler_job,
-                                       job_complete,
-                                       job,
-                                       NULL);
-
-  return FALSE; /* job is complete (or cancelled) */
+  g_main_context_invoke (g_main_context_get_thread_default (), job_complete, job);
 }
 
 static void
 udisks_threaded_job_constructed (GObject *object)
 {
-  UDisksThreadedJob *job = UDISKS_THREADED_JOB (object);
-
   if (G_OBJECT_CLASS (udisks_threaded_job_parent_class)->constructed != NULL)
     G_OBJECT_CLASS (udisks_threaded_job_parent_class)->constructed (object);
 
   g_assert (g_thread_supported ());
-  g_io_scheduler_push_job (run_io_scheduler_job,
-                           job,
-                           NULL,
-                           G_PRIORITY_DEFAULT,
-                           udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)));
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -340,9 +327,12 @@ udisks_threaded_job_class_init (UDisksThreadedJobClass *klass)
  *
  * Creates a new #UDisksThreadedJob instance.
  *
- * The job is started immediately - connect to the
- * #UDisksThreadedJob::threaded-job-completed or #UDisksJob::completed
- * signals to get notified when the job is done.
+ * The job is not started automatically! Use udisks_threaded_job_start() to
+ * start the job after #UDisksThreadedJob::threaded-job-completed or
+ * #UDisksJob::completed signals are connected (to get notified when the job is
+ * done). This is to prevent a race condition with the @job_func finishing
+ * before the signals are connected in which case the signal handlers are never
+ * triggered.
  *
  * Returns: A new #UDisksThreadedJob. Free with g_object_unref().
  */
@@ -362,6 +352,28 @@ udisks_threaded_job_new (UDisksThreadedJobFunc  job_func,
                                             "daemon", daemon,
                                             "cancellable", cancellable,
                                             NULL));
+}
+
+/**
+ * udisks_threaded_job_start:
+ * @job: the job to start
+ *
+ * Start the @job. Connect to the #UDisksThreadedJob::threaded-job-completed or
+ * #UDisksJob::completed signals to get notified when the job is done.
+ *
+ * */
+void udisks_threaded_job_start (UDisksThreadedJob *job) {
+  GTask *task;
+
+  task = g_task_new (NULL,
+                     udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)),
+                     NULL,
+                     NULL);
+
+  g_task_set_task_data (task, job, NULL);
+  g_task_set_return_on_cancel (task, TRUE);
+  g_task_run_in_thread (task, run_task_job);
+  g_object_unref (task);
 }
 
 /**

@@ -282,9 +282,9 @@ udisks_fstab_monitor_constructed (GObject *object)
                                                &error);
   if (monitor->file_monitor == NULL)
     {
-      udisks_error ("Error monitoring /etc/fstab: %s (%s, %d)",
+      udisks_critical ("Error monitoring /etc/fstab: %s (%s, %d)",
                     error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
+      g_clear_error (&error);
     }
   else
     {

@@ -2,32 +2,27 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>org.freedesktop.UDisks2.Partition</title>
-<meta name="generator" content="DocBook XSL Stylesheets V1.78.1">
+<title>org.freedesktop.UDisks2.Partition: UDisks Reference Manual</title>
+<meta name="generator" content="DocBook XSL Stylesheets Vsnapshot">
 <link rel="home" href="index.html" title="UDisks Reference Manual">
 <link rel="up" href="ch02.html" title="D-Bus Interfaces">
 <link rel="prev" href="gdbus-org.freedesktop.UDisks2.Block.html" title="org.freedesktop.UDisks2.Block">
 <link rel="next" href="gdbus-org.freedesktop.UDisks2.PartitionTable.html" title="org.freedesktop.UDisks2.PartitionTable">
-<meta name="generator" content="GTK-Doc V1.19 (XML mode)">
+<meta name="generator" content="GTK-Doc V1.25 (XML mode)">
 <link rel="stylesheet" href="style.css" type="text/css">
 </head>
 <body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF">
-<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="2">
-<tr valign="middle">
-<td><a accesskey="p" href="gdbus-org.freedesktop.UDisks2.Block.html"><img src="left.png" width="24" height="24" border="0" alt="Prev"></a></td>
-<td><a accesskey="u" href="ch02.html"><img src="up.png" width="24" height="24" border="0" alt="Up"></a></td>
-<td><a accesskey="h" href="index.html"><img src="home.png" width="24" height="24" border="0" alt="Home"></a></td>
-<th width="100%" align="center">UDisks Reference Manual</th>
-<td><a accesskey="n" href="gdbus-org.freedesktop.UDisks2.PartitionTable.html"><img src="right.png" width="24" height="24" border="0" alt="Next"></a></td>
-</tr>
-<tr><td colspan="5" class="shortcuts">
-<a href="#gdbus-org.freedesktop.UDisks2.Partition.synopsis" class="shortcut">Top</a>
-                   | 
-                  <a href="#gdbus-org.freedesktop.UDisks2.Partition.description" class="shortcut">Description</a>
-                   | 
-                  <a href="#gdbus-org.freedesktop.UDisks2.Partition.properties" class="shortcut">Properties</a>
-</td></tr>
-</table>
+<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="5"><tr valign="middle">
+<td width="100%" align="left" class="shortcuts">
+<a href="#" class="shortcut">Top</a><span id="nav_description">  <span class="dim">|</span> 
+                  <a href="#gdbus-org.freedesktop.UDisks2.Partition.description" class="shortcut">Description</a></span><span id="nav_properties">  <span class="dim">|</span> 
+                  <a href="#gdbus-org.freedesktop.UDisks2.Partition.properties" class="shortcut">Properties</a></span>
+</td>
+<td><a accesskey="h" href="index.html"><img src="home.png" width="16" height="16" border="0" alt="Home"></a></td>
+<td><a accesskey="u" href="ch02.html"><img src="up.png" width="16" height="16" border="0" alt="Up"></a></td>
+<td><a accesskey="p" href="gdbus-org.freedesktop.UDisks2.Block.html"><img src="left.png" width="16" height="16" border="0" alt="Prev"></a></td>
+<td><a accesskey="n" href="gdbus-org.freedesktop.UDisks2.PartitionTable.html"><img src="right.png" width="16" height="16" border="0" alt="Next"></a></td>
+</tr></table>
 <div class="refentry">
 <a name="gdbus-org.freedesktop.UDisks2.Partition"></a><div class="titlepage"></div>
 <div class="refnamediv"><table width="100%"><tr>
@@ -35,7 +30,7 @@
 <h2><span class="refentrytitle"><a name="gdbus-interface-org-freedesktop-UDisks2-Partition.top_of_page"></a>org.freedesktop.UDisks2.Partition</span></h2>
 <p>org.freedesktop.UDisks2.Partition — Block device representing a partition</p>
 </td>
-<td valign="top" align="right"></td>
+<td class="gallery_image" valign="top" align="right"></td>
 </tr></table></div>
 <div class="refsynopsisdiv">
 <h2>Methods</h2>
@@ -45,6 +40,8 @@
 <a class="link" href="gdbus-org.freedesktop.UDisks2.Partition.html#gdbus-method-org-freedesktop-UDisks2-Partition.SetName" title="The SetName() method">SetName</a>  (IN  s     name,
           IN  a{sv} options);
 <a class="link" href="gdbus-org.freedesktop.UDisks2.Partition.html#gdbus-method-org-freedesktop-UDisks2-Partition.SetFlags" title="The SetFlags() method">SetFlags</a> (IN  t     flags,
+          IN  a{sv} options);
+<a class="link" href="gdbus-org.freedesktop.UDisks2.Partition.html#gdbus-method-org-freedesktop-UDisks2-Partition.Resize" title="The Resize() method">Resize</a>   (IN  t     size,
           IN  a{sv} options);
 <a class="link" href="gdbus-org.freedesktop.UDisks2.Partition.html#gdbus-method-org-freedesktop-UDisks2-Partition.Delete" title="The Delete() method">Delete</a>   (IN  a{sv} options);
 </pre>
@@ -155,11 +152,53 @@ SetFlags (IN  t     flags,
 </div>
 <hr>
 <div class="refsect2">
+<a name="gdbus-method-org-freedesktop-UDisks2-Partition.Resize"></a><h3>The Resize() method</h3>
+<pre class="programlisting">
+Resize (IN  t     size,
+        IN  a{sv} options);
+</pre>
+<p>         <em class="parameter"><code>since</code></em> 2.7.2
+</p>
+<p>         Resizes the partition.
+</p>
+<p>         The partiton will not change its position but might be slightly bigger
+         than requested due to sector counts and alignment (e.g. 1MiB).
+         If the requested size can't be allocated it results in an error.
+         The maximal size can automatically be set by using 0 as size.
+</p>
+<div class="variablelist"><table border="0" class="variablelist">
+<colgroup>
+<col align="left" valign="top">
+<col>
+</colgroup>
+<tbody>
+<tr>
+<td><p><span class="term"><code class="literal">IN t <em class="parameter"><code>size</code></em></code>:</span></p></td>
+<td><p>New partition size in bytes, 0 for maximal size.</p></td>
+</tr>
+<tr>
+<td><p><span class="term"><code class="literal">IN a{sv} <em class="parameter"><code>options</code></em></code>:</span></p></td>
+<td><p>Options.</p></td>
+</tr>
+</tbody>
+</table></div>
+</div>
+<hr>
+<div class="refsect2">
 <a name="gdbus-method-org-freedesktop-UDisks2-Partition.Delete"></a><h3>The Delete() method</h3>
 <pre class="programlisting">
 Delete (IN  a{sv} options);
 </pre>
 <p>         Deletes the partition.
+</p>
+<p>         If the option <em class="parameter"><code>tear-down</code></em> is set to
+         <code class="constant">TRUE</code>, then the block device and all its children will be
+         cleaned up before formatting.  This cleanup consists of
+         removing entries from /etc/fstab and /etc/crypttab, and
+         locking of encrypted block devices.  Entries in /etc/fstab
+         and /etc/crypttab that have been created with the
+         'track-parents' options to AddConfigurationItem will be
+         removed even if their block device is currently unavailable.
 </p>
 <div class="variablelist"><table border="0" class="variablelist">
 <colgroup>
@@ -168,7 +207,7 @@ Delete (IN  a{sv} options);
 </colgroup>
 <tbody><tr>
 <td><p><span class="term"><code class="literal">IN a{sv} <em class="parameter"><code>options</code></em></code>:</span></p></td>
-<td><p>Options (currently unused except for <a class="link" href="udisks-std-options.html" title="The options parameter">standard options</a>).</p></td>
+<td><p>Options.</p></td>
 </tr></tbody>
 </table></div>
 </div>
@@ -319,7 +358,6 @@ IsContained  readable   b
 </div>
 </div>
 <div class="footer">
-<hr>
-          Generated by GTK-Doc V1.19</div>
+<hr>Generated by GTK-Doc V1.25</div>
 </body>
 </html>

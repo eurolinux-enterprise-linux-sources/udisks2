@@ -2,22 +2,22 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>Part II. D-Bus API Reference</title>
-<meta name="generator" content="DocBook XSL Stylesheets V1.78.1">
+<title>Part II. D-Bus API Reference: UDisks Reference Manual</title>
+<meta name="generator" content="DocBook XSL Stylesheets Vsnapshot">
 <link rel="home" href="index.html" title="UDisks Reference Manual">
 <link rel="up" href="index.html" title="UDisks Reference Manual">
-<link rel="prev" href="udisksctl.1.html" title="udisksctl">
+<link rel="prev" href="udisks2_lsm.conf.5.html" title="udisks2_lsm.conf">
 <link rel="next" href="ref-dbus-overview.html" title="Overview">
-<meta name="generator" content="GTK-Doc V1.19 (XML mode)">
+<meta name="generator" content="GTK-Doc V1.25 (XML mode)">
 <link rel="stylesheet" href="style.css" type="text/css">
 </head>
 <body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF">
-<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="2"><tr valign="middle">
-<td><a accesskey="p" href="udisksctl.1.html"><img src="left.png" width="24" height="24" border="0" alt="Prev"></a></td>
-<td> </td>
-<td><a accesskey="h" href="index.html"><img src="home.png" width="24" height="24" border="0" alt="Home"></a></td>
-<th width="100%" align="center">UDisks Reference Manual</th>
-<td><a accesskey="n" href="ref-dbus-overview.html"><img src="right.png" width="24" height="24" border="0" alt="Next"></a></td>
+<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="5"><tr valign="middle">
+<td width="100%" align="left" class="shortcuts"></td>
+<td><a accesskey="h" href="index.html"><img src="home.png" width="16" height="16" border="0" alt="Home"></a></td>
+<td><img src="up-insensitive.png" width="16" height="16" border="0"></td>
+<td><a accesskey="p" href="udisks2_lsm.conf.5.html"><img src="left.png" width="16" height="16" border="0" alt="Prev"></a></td>
+<td><a accesskey="n" href="ref-dbus-overview.html"><img src="right.png" width="16" height="16" border="0" alt="Next"></a></td>
 </tr></table>
 <div class="part">
 <div class="titlepage"><div><div><h1 class="title">
@@ -33,6 +33,7 @@
 <dt><span class="sect1"><a href="ref-dbus-block-devices.html">The /org/freedesktop/UDisks2/block_devices/* objects</a></span></dt>
 <dt><span class="sect1"><a href="ref-dbus-drives.html">The /org/freedesktop/UDisks2/drives/* objects</a></span></dt>
 <dt><span class="sect1"><a href="ref-dbus-md-raid.html">The /org/freedesktop/UDisks2/mdraid/* objects</a></span></dt>
+<dt><span class="sect1"><a href="ref-iscsi-session.html">The /org/freedesktop/UDisks2/iscsi/session[0-9]+ objects</a></span></dt>
 <dt><span class="sect1"><a href="ref-dbus-jobs.html">The /org/freedesktop/UDisks2/jobs/* objects</a></span></dt>
 <dt><span class="sect1"><a href="udisks-polkit-actions.html">Authorization Checks</a></span></dt>
 <dt><span class="sect1"><a href="udisks-std-options.html">The <em class="parameter"><code>options</code></em> parameter</a></span></dt>
@@ -75,12 +76,59 @@
 <dt>
 <span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Job.html">org.freedesktop.UDisks2.Job</a></span><span class="refpurpose"> — Long-running tasks</span>
 </dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.LSM.html">org.freedesktop.UDisks2.Manager.LSM</a></span><span class="refpurpose"> — LSM add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Drive.LSM.html">org.freedesktop.UDisks2.Drive.LSM</a></span><span class="refpurpose"> — LSM interface exported on disk objects</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Drive.LsmLocal.html">org.freedesktop.UDisks2.Drive.LsmLocal</a></span><span class="refpurpose"> — Interface exported on disk drive objects for managing</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Block.LVM2.html">org.freedesktop.UDisks2.Block.LVM2</a></span><span class="refpurpose"> — LVM2 add-on to the block device</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.LogicalVolume.html">org.freedesktop.UDisks2.LogicalVolume</a></span><span class="refpurpose"> — A logical volume</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.LVM2.html">org.freedesktop.UDisks2.Manager.LVM2</a></span><span class="refpurpose"> — LVM2 add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.PhysicalVolume.html">org.freedesktop.UDisks2.PhysicalVolume</a></span><span class="refpurpose"> — Block device that is a physical volume</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.VolumeGroup.html">org.freedesktop.UDisks2.VolumeGroup</a></span><span class="refpurpose"> — A volume group</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.ISCSI.Session.html">org.freedesktop.UDisks2.ISCSI.Session</a></span><span class="refpurpose"> — iSCSI session.</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.ISCSI.Initiator.html">org.freedesktop.UDisks2.Manager.ISCSI.Initiator</a></span><span class="refpurpose"> — iSCSI add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.BTRFS.html">org.freedesktop.UDisks2.Manager.BTRFS</a></span><span class="refpurpose"> — BTRFS add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Filesystem.BTRFS.html">org.freedesktop.UDisks2.Filesystem.BTRFS</a></span><span class="refpurpose"> — BTRFS filesystem interface exported on block objects</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.ZRAM.html">org.freedesktop.UDisks2.Manager.ZRAM</a></span><span class="refpurpose"> — ZRAM add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Block.ZRAM.html">org.freedesktop.UDisks2.Block.ZRAM</a></span><span class="refpurpose"> — ZRAM block device</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.Bcache.html">org.freedesktop.UDisks2.Manager.Bcache</a></span><span class="refpurpose"></span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Block.Bcache.html">org.freedesktop.UDisks2.Block.Bcache</a></span><span class="refpurpose"> — A bcache block device</span>
+</dt>
 </dl></dd>
 </dl>
 </div>
 </div>
 <div class="footer">
-<hr>
-          Generated by GTK-Doc V1.19</div>
+<hr>Generated by GTK-Doc V1.25</div>
 </body>
 </html>

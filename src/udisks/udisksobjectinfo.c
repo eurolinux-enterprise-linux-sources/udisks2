@@ -259,10 +259,10 @@ udisks_client_get_object_info_for_block (UDisksClient     *client,
   if (partition != NULL)
     {
       /* Translators: Used to describe a partition of a block device.
-       *              The %d is the partition number.
+       *              The %u is the partition number.
        *              The %s is the description for the block device (e.g. "5 GB Block Device").
        */
-      s = g_strdup_printf (C_("part-block", "Partition %d of %s"),
+      s = g_strdup_printf (C_("part-block", "Partition %u of %s"),
                            udisks_partition_get_number (partition), info->description);
       g_free (info->description);
       info->description = s;
@@ -276,7 +276,7 @@ udisks_client_get_object_info_for_block (UDisksClient     *client,
                                      info->description,
                                      udisks_block_get_preferred_device (block));
 
-  info->sort_key = g_strdup_printf ("02_block_%s_%d",
+  info->sort_key = g_strdup_printf ("02_block_%s_%u",
                                     last_segment (g_dbus_object_get_object_path (G_DBUS_OBJECT (info->object))),
                                     partition != NULL ? udisks_partition_get_number (partition) : 0);
 }
@@ -313,10 +313,10 @@ udisks_client_get_object_info_for_loop (UDisksClient     *client,
   if (partition != NULL)
     {
       /* Translators: Used to describe a partition of a loop device.
-       *              The %d is the partition number.
+       *              The %u is the partition number.
        *              The %s is the description for the loop device (e.g. "5 GB Loop Device").
        */
-      s = g_strdup_printf (C_("part-loop", "Partition %d of %s"),
+      s = g_strdup_printf (C_("part-loop", "Partition %u of %s"),
                            udisks_partition_get_number (partition), info->description);
       g_free (info->description);
       info->description = s;
@@ -332,7 +332,7 @@ udisks_client_get_object_info_for_loop (UDisksClient     *client,
                                      info->name,
                                      udisks_block_get_preferred_device (block));
 
-  info->sort_key = g_strdup_printf ("03_loop_%s_%d",
+  info->sort_key = g_strdup_printf ("03_loop_%s_%u",
                                     last_segment (g_dbus_object_get_object_path (G_DBUS_OBJECT (info->object))),
                                     partition != NULL ? udisks_partition_get_number (partition) : 0);
 }
@@ -409,10 +409,10 @@ udisks_client_get_object_info_for_mdraid (UDisksClient     *client,
   if (partition != NULL)
     {
       /* Translators: Used to describe a partition of a RAID Array.
-       *              The %d is the partition number.
+       *              The %u is the partition number.
        *              The %s is the description for the drive (e.g. "2 TB RAID-5").
        */
-      s = g_strdup_printf (C_("part-raid", "Partition %d of %s"),
+      s = g_strdup_printf (C_("part-raid", "Partition %u of %s"),
                            udisks_partition_get_number (partition), info->description);
       g_free (info->description);
       info->description = s;
@@ -469,7 +469,7 @@ udisks_client_get_object_info_for_mdraid (UDisksClient     *client,
 
   g_clear_object (&block);
 
-  info->sort_key = g_strdup_printf ("01_mdraid_%s_%d", udisks_mdraid_get_uuid (mdraid),
+  info->sort_key = g_strdup_printf ("01_mdraid_%s_%u", udisks_mdraid_get_uuid (mdraid),
                                     partition != NULL ? udisks_partition_get_number (partition) : 0);
 }
 
@@ -722,7 +722,7 @@ udisks_client_get_object_info_for_drive (UDisksClient     *client,
       g_free (s);
     }
   /* fallback for media_icon */
-  if (media_removable && media_available && info->media_icon == NULL)
+  if (media_available && info->media_icon == NULL)
     {
       if (media_removable)
         {
@@ -739,7 +739,7 @@ udisks_client_get_object_info_for_drive (UDisksClient     *client,
       g_free (s);
     }
   /* fallback for media_icon_symbolic */
-  if (media_removable && media_available && info->media_icon_symbolic == NULL)
+  if (media_available && info->media_icon_symbolic == NULL)
     {
       if (media_removable)
         {
@@ -826,10 +826,10 @@ udisks_client_get_object_info_for_drive (UDisksClient     *client,
   if (partition != NULL)
     {
       /* Translators: Used to describe a partition of a drive.
-       *              The %d is the partition number.
+       *              The %u is the partition number.
        *              The %s is the description for the drive (e.g. "2 GB Thumb Drive").
        */
-      s = g_strdup_printf (C_("part-drive", "Partition %d of %s"),
+      s = g_strdup_printf (C_("part-drive", "Partition %u of %s"),
                            udisks_partition_get_number (partition), info->description);
       g_free (info->description);
       info->description = s;

@@ -2,22 +2,22 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>udisks</title>
-<meta name="generator" content="DocBook XSL Stylesheets V1.78.1">
+<title>udisks: UDisks Reference Manual</title>
+<meta name="generator" content="DocBook XSL Stylesheets Vsnapshot">
 <link rel="home" href="index.html" title="UDisks Reference Manual">
 <link rel="up" href="overview.html" title="Part I. Manual pages and Overview">
-<link rel="prev" href="overview.html" title="Part I. Manual pages and Overview">
-<link rel="next" href="udisksd.8.html" title="udisksd">
-<meta name="generator" content="GTK-Doc V1.19 (XML mode)">
+<link rel="prev" href="udiskd.8.html" title="udisksd">
+<link rel="next" href="udisksctl.1.html" title="udisksctl">
+<meta name="generator" content="GTK-Doc V1.25 (XML mode)">
 <link rel="stylesheet" href="style.css" type="text/css">
 </head>
 <body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF">
-<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="2"><tr valign="middle">
-<td><a accesskey="p" href="overview.html"><img src="left.png" width="24" height="24" border="0" alt="Prev"></a></td>
-<td><a accesskey="u" href="overview.html"><img src="up.png" width="24" height="24" border="0" alt="Up"></a></td>
-<td><a accesskey="h" href="index.html"><img src="home.png" width="24" height="24" border="0" alt="Home"></a></td>
-<th width="100%" align="center">UDisks Reference Manual</th>
-<td><a accesskey="n" href="udisksd.8.html"><img src="right.png" width="24" height="24" border="0" alt="Next"></a></td>
+<table class="navigation" id="top" width="100%" summary="Navigation header" cellpadding="2" cellspacing="5"><tr valign="middle">
+<td width="100%" align="left" class="shortcuts"></td>
+<td><a accesskey="h" href="index.html"><img src="home.png" width="16" height="16" border="0" alt="Home"></a></td>
+<td><a accesskey="u" href="overview.html"><img src="up.png" width="16" height="16" border="0" alt="Up"></a></td>
+<td><a accesskey="p" href="udiskd.8.html"><img src="left.png" width="16" height="16" border="0" alt="Prev"></a></td>
+<td><a accesskey="n" href="udisksctl.1.html"><img src="right.png" width="16" height="16" border="0" alt="Next"></a></td>
 </tr></table>
 <div class="refentry">
 <a name="udisks.8"></a><div class="titlepage"></div>
@@ -26,15 +26,15 @@
 <h2><span class="refentrytitle">udisks</span></h2>
 <p>udisks — Disk Manager</p>
 </td>
-<td valign="top" align="right"></td>
+<td class="gallery_image" valign="top" align="right"></td>
 </tr></table></div>
 <div class="refsect1">
-<a name="id-1.2.2.4"></a><h2>DESCRIPTION</h2>
+<a name="id-1.2.3.4"></a><h2>DESCRIPTION</h2>
 <p>
       udisks provides interfaces to enumerate and perform operations
       on disks and storage devices. Any application (including
       unprivileged ones) can access the
-      <a class="link" href="udisksd.8.html" title="udisksd"><span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span></a>
+      <span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span>
       daemon via the name <span class="emphasis"><em>org.freedesktop.UDisks2</em></span>
       on the <a class="ulink" href="http://www.freedesktop.org/wiki/Software/dbus" target="_top">system message bus</a>.
       In addition to the D-Bus API, a
@@ -43,13 +43,11 @@
       <a class="ulink" href="https://live.gnome.org/GObjectIntrospection" target="_top">GObjectIntrospection</a>
       support such as Javascript and Python.
       udisks is only indirectly involved in what devices and objects
-      are shown in the user interface. See these
-      <a class="ulink" href="http://git.gnome.org/browse/gvfs/tree/monitor/udisks2/what-is-shown.txt" target="_top">notes</a>
-      for what is shown in GNOME 3.
+      are shown in the user interface.
     </p>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.5"></a><h2>ACCESS CONTROL</h2>
+<a name="id-1.2.3.5"></a><h2>ACCESS CONTROL</h2>
 <p>
       By default, logged-in users in active log-in sessions are
       permitted to perform operations (for example, mounting,
@@ -68,10 +66,10 @@
     </p>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.6"></a><h2>DRIVE CONFIGURATION</h2>
+<a name="id-1.2.3.6"></a><h2>DRIVE CONFIGURATION</h2>
 <p>
       At start-up and when a drive is connected,
-      <a class="link" href="udisksd.8.html" title="udisksd"><span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span></a>
+      <span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span>
       will apply configuration stored in the file
       <code class="filename">/etc/udisks2/IDENTIFIER.conf</code>
       where <span class="emphasis"><em>IDENTIFIER</em></span> is the value of the
@@ -90,7 +88,7 @@
       be added in the future.
     </p>
 <div class="refsect2">
-<a name="id-1.2.2.6.3"></a><h3>ATA group</h3>
+<a name="id-1.2.3.6.3"></a><h3>ATA group</h3>
 <p>
         The <code class="literal">ATA</code> group is for settings that apply to
         drives using the ATA command-set. The following keys are
@@ -168,12 +166,23 @@
               This key was added in 2.1.
             </p></td>
 </tr>
+<tr>
+<td><p><span class="term"><code class="option">ReadLookaheadEnabled</code></span></p></td>
+<td><p>
+              A boolean specifying whether to enable or disable the
+              Read Look-ahead. Valid values for this key are
+              <span class="quote">“<span class="quote">true</span>”</span> and <span class="quote">“<span class="quote">false</span>”</span>. This is
+              similar to the <code class="option">-A</code> option in
+              <span class="citerefentry"><span class="refentrytitle">hdparm</span>(8)</span>.
+              This key was added in 2.6.0.
+            </p></td>
+</tr>
 </tbody>
 </table></div>
 </div>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.7"></a><h2>DEVICE INFORMATION</h2>
+<a name="id-1.2.3.7"></a><h2>DEVICE INFORMATION</h2>
 <p>
       udisks relies on recent versions of
       <span class="citerefentry"><span class="refentrytitle">udev</span>(7)</span>
@@ -260,7 +269,7 @@
 </table></div>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.8"></a><h2>API STABILITY</h2>
+<a name="id-1.2.3.8"></a><h2>API STABILITY</h2>
 <p>
       udisks guarantees a stable D-Bus API within the same major
       version and this guarantee also extends to the client-side
@@ -292,11 +301,11 @@
       or
       <span class="citerefentry"><span class="refentrytitle">gdbus</span>(1)</span>
       to interact with
-      <a class="link" href="udisksd.8.html" title="udisksd"><span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span></a>.
+      <span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span>.
     </p>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.9"></a><h2>AUDIENCE</h2>
+<a name="id-1.2.3.9"></a><h2>AUDIENCE</h2>
 <p>
       The intended audience of udisks include operating system
       developers working on the higher-level parts of the operating
@@ -345,34 +354,34 @@
     </p>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.10"></a><h2>AUTHOR</h2>
+<a name="id-1.2.3.10"></a><h2>AUTHOR</h2>
 <p>
-      Written by David Zeuthen
+      This man page was originally written for UDisks2 by David Zeuthen
       <code class="email">&lt;<a class="email" href="mailto:zeuthen@gmail.com">zeuthen@gmail.com</a>&gt;</code> with a lot of help
       from many others.
     </p>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.11"></a><h2>BUGS</h2>
+<a name="id-1.2.3.11"></a><h2>BUGS</h2>
 <p>
       Please send bug reports to either the distribution bug tracker
       or the upstream bug tracker at
-      <a class="ulink" href="http://bugs.freedesktop.org/enter_bug.cgi?product=udisks" target="_top">http://bugs.freedesktop.org/enter_bug.cgi?product=udisks</a>.
+      <a class="ulink" href="https://github.com/storaged-project/udisks/issues" target="_top">https://github.com/storaged-project/udisks/issues</a>.
     </p>
 </div>
 <div class="refsect1">
-<a name="id-1.2.2.12"></a><h2>SEE ALSO</h2>
+<a name="id-1.2.3.12"></a><h2>SEE ALSO</h2>
 <p>
       <span class="citerefentry"><span class="refentrytitle">udev</span>(7)</span>,
       <span class="citerefentry"><span class="refentrytitle">polkit</span>(8)</span>,
-      <a class="link" href="udisksd.8.html" title="udisksd"><span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span></a>,
+      <span class="citerefentry"><span class="refentrytitle">udisksd</span>(8)</span>,
       <a class="link" href="udisksctl.1.html" title="udisksctl"><span class="citerefentry"><span class="refentrytitle">udisksctl</span>(1)</span></a>,
+      <a class="link" href="umount.udisks2.8.html" title="umount.udisks2"><span class="citerefentry"><span class="refentrytitle">umount.udisks2</span>(8)</span></a>,
       <span class="citerefentry"><span class="refentrytitle">gnome-disks</span>(1)</span>
     </p>
 </div>
 </div>
 <div class="footer">
-<hr>
-          Generated by GTK-Doc V1.19</div>
+<hr>Generated by GTK-Doc V1.25</div>
 </body>
 </html>

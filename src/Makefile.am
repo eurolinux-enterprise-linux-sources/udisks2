@@ -1,43 +1,83 @@
 ## Process this file with automake to produce Makefile.in
 
+SHELL = /bin/bash
+.SHELLFLAGS = -o pipefail -c
+
+PYTHON ?= python3
+
 NULL =
 
-SUBDIRS = data udisks src tools po doc
+SUBDIRS = data udisks src tools modules po doc
 
 ACLOCAL_AMFLAGS = -I m4 ${ACLOCAL_FLAGS}
 
-EXTRA_DIST = 			\
-	HACKING 		\
+GCC_COLORS ?= 'auto'
+export GCC_COLORS
+
+EXTRA_DIST =                                                                   \
+	HACKING                                                                \
+	README.md                                                              \
 	$(NULL)
 
-DISTCHECK_CONFIGURE_FLAGS=							\
-	--enable-gtk-doc 							\
-	--disable-introspection							\
-	--with-udevdir=$$dc_install_base/$(udevdir)				\
-	--with-systemdsystemunitdir=$$dc_install_base/$(systemdsystemunitdir)	\
+DISTCHECK_CONFIGURE_FLAGS =                                                    \
+	--enable-gtk-doc                                                       \
+	--enable-modules                                                       \
+	--disable-introspection                                                \
+	--with-udevdir=$$dc_install_base/$(udevdir)                            \
+	--with-systemdsystemunitdir=$$dc_install_base/$(systemdsystemunitdir)  \
 	$(NULL)
 
-sign : dist
+sign: dist
 	gpg --armor --detach-sign --output udisks-$(VERSION).tar.bz2.sign udisks-$(VERSION).tar.bz2
 
-publish : sign
-	scp udisks-$(VERSION).tar.bz2 udisks-$(VERSION).tar.bz2.sign "people.freedesktop.org:/srv/udisks.freedesktop.org/www/releases/"
+shortlog:
+	git shortlog -r --no-merges $$(git tag -l | tail -n 1)..HEAD
 
-publish-docs :
-	gtkdoc-rebase --html-dir doc/html --online
-	ssh "people.freedesktop.org" "mkdir -p /srv/udisks.freedesktop.org/www/docs/$(VERSION)"
-	scp doc/html/* "people.freedesktop.org:/srv/udisks.freedesktop.org/www/docs/$(VERSION)"
-	ssh "people.freedesktop.org" "rm -f /srv/udisks.freedesktop.org/www/docs/latest; ln -s $(VERSION) /srv/udisks.freedesktop.org/www/docs/latest"
-
-# publish docs readable from http://udisks.freedesktop.org/docs/master/ (instead of latest)
-#
-# This is useful for work-in-progress when hacking on master and you want
-# to easily share API ideas etc. with others without requiring them to
-# build master themselves
-publish-docs-master :
-	gtkdoc-rebase --html-dir doc/html --online
-	ssh "people.freedesktop.org" "rm -rf /srv/udisks.freedesktop.org/www/docs/master; mkdir -p /srv/udisks.freedesktop.org/www/docs/master"
-	scp doc/html/* "people.freedesktop.org:/srv/udisks.freedesktop.org/www/docs/master"
-
-clean-local :
+clean-local:
 	rm -f *~
+
+dbus-tests:
+	$(MAKE) all &>/dev/null
+	sudo $(PYTHON) src/tests/dbus-tests/run_tests.py -l dbus_tests.log |& tee dbus_tests_output.log \
+       && echo "dbus-tests: SUCCESS" >> RESULTS || echo "dbus-tests: FAILED" >> RESULTS
+	@tail -1 RESULTS | grep -q "dbus-tests: SUCCESS"
+
+unittests:
+	$(MAKE) all &>/dev/null
+	cd src/tests && ./udisks-test | tee -a ../../unittests_output.log \
+       && echo "unittests: SUCCESS" >> ../../RESULTS || echo "unittests: FAILED" >> ../../RESULTS
+	@tail -1 RESULTS | grep -q "unittests: SUCCESS"
+
+integration-tests:
+	$(MAKE) all &>/dev/null
+	cd src/tests && sudo $(PYTHON) ./integration-test | tee -a ../../integration_tests_output.log \
+       && echo "integration-tests: SUCCESS" >> ../../RESULTS || echo "integration-tests: FAILED" >> ../../RESULTS
+	@tail -1 RESULTS | grep -q "integration-tests: SUCCESS"
+
+ci: all
+	sudo rm -f *.log RESULTS STATUS
+	-$(MAKE) check
+	-$(MAKE) dbus-tests
+	-$(MAKE) unittests
+	-$(MAKE) integration-tests
+	@grep -q FAILED RESULTS && echo -n failure > STATUS || echo -n success > STATUS
+	@grep -q success STATUS
+
+RPMDIR = `readlink -f $(top_builddir)/packaging`
+SRCDIR = `readlink -f $(top_srcdir)`
+rpm: dist-bzip2
+	rpmbuild \
+		--define "_sourcedir $(SRCDIR)" \
+		--define "_specdir $(RPMDIR)" \
+		--define "_builddir $(RPMDIR)" \
+		--define "_srcrpmdir $(RPMDIR)" \
+		--define "_rpmdir $(RPMDIR)" \
+		-ba $(SRCDIR)/packaging/udisks2.spec
+srpm: dist-bzip2
+	rpmbuild \
+		--define "_sourcedir $(SRCDIR)" \
+		--define "_specdir $(RPMDIR)" \
+		--define "_builddir $(RPMDIR)" \
+		--define "_srcrpmdir $(RPMDIR)" \
+		--define "_rpmdir $(RPMDIR)" \
+		-bs $(SRCDIR)/packaging/udisks2.spec

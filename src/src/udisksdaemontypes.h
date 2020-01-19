@@ -1,5 +1,4 @@
-/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*-
- *
+/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*- *
  * Copyright (C) 2007-2010 David Zeuthen <zeuthen@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -112,6 +111,12 @@ typedef struct _UDisksLinuxPartitionTable UDisksLinuxPartitionTable;
 struct UDisksInhibitCookie;
 typedef struct UDisksInhibitCookie UDisksInhibitCookie;
 
+struct _UDisksModuleManager;
+typedef struct _UDisksModuleManager UDisksModuleManager;
+
+typedef struct _UDisksConfigManager        UDisksConfigManager;
+typedef struct _UDisksConfigManagerClass   UDisksConfigManagerClass;
+
 /**
  * UDisksThreadedJobFunc:
  * @job: A #UDisksThreadedJob.
@@ -162,11 +167,12 @@ typedef enum
  */
 typedef enum
 {
-  UDISKS_LOG_LEVEL_DEBUG,
-  UDISKS_LOG_LEVEL_INFO,
-  UDISKS_LOG_LEVEL_NOTICE,
-  UDISKS_LOG_LEVEL_WARNING,
-  UDISKS_LOG_LEVEL_ERROR
+  UDISKS_LOG_LEVEL_DEBUG = G_LOG_LEVEL_DEBUG,
+  UDISKS_LOG_LEVEL_INFO = G_LOG_LEVEL_INFO,
+  UDISKS_LOG_LEVEL_MESSAGE = G_LOG_LEVEL_MESSAGE,
+  UDISKS_LOG_LEVEL_WARNING = G_LOG_LEVEL_WARNING,
+  UDISKS_LOG_LEVEL_CRITICAL = G_LOG_LEVEL_CRITICAL,
+  UDISKS_LOG_LEVEL_ERROR = G_LOG_LEVEL_ERROR
 } UDisksLogLevel;
 
 struct _UDisksAtaCommandOutput;
@@ -192,5 +198,61 @@ typedef enum
 
 struct _UDisksLinuxDevice;
 typedef struct _UDisksLinuxDevice UDisksLinuxDevice;
+
+/**
+ * UDisksObjectHasInterfaceFunc:
+ * @object: A #UDisksObject to consider.
+ *
+ * Function prototype that is used to determine whether the @object is applicable
+ * for carrying a particular D-Bus interface (determined by the callback function itself).
+ *
+ * Used typically over #UDisksLinuxBlockObject and #UDisksLinuxDriveObject
+ * objects for checking specific feature that leads to exporting extra D-Bus
+ * interface on the object.
+ *
+ * Returns: %TRUE if the @object is a valid candidate for the particular D-Bus interface, %FALSE otherwise.
+ */
+typedef gboolean (*UDisksObjectHasInterfaceFunc)     (UDisksObject   *object);
+
+/**
+ * UDisksObjectConnectInterfaceFunc:
+ * @object: A #UDisksObject to perform connection operation onto.
+ *
+ * Function prototype that is used once a new D-Bus interface is created (meaning
+ * the #UDisksObjectHasInterfaceFunc call was successful) to perform optional
+ * additional tasks before the interface is exported on the @object.
+ *
+ * Used typically over #UDisksLinuxBlockObject and #UDisksLinuxDriveObject objects.
+ */
+typedef void     (*UDisksObjectConnectInterfaceFunc) (UDisksObject   *object);
+
+/**
+ * UDisksObjectUpdateInterfaceFunc:
+ * @object: A #UDisksObject.
+ * @uevent_action: An uevent action string.
+ * @interface: Existing #GDBusInterface exported on the @object.
+ *
+ * Function prototype that is used on existing @interface on the @object to process
+ * incoming uevents.
+ *
+ * Used typically over #UDisksLinuxBlockObject and #UDisksLinuxDriveObject objects.
+ *
+ * Returns: %TRUE if configuration (properties) on the interface have changed, %FALSE otherwise.
+ */
+typedef gboolean (*UDisksObjectUpdateInterfaceFunc)  (UDisksObject   *object,
+                                                      const gchar    *uevent_action,
+                                                      GDBusInterface *interface);
+
+/**
+ * UDisksTrackParentFunc:
+ * @daemon: The #UDisksDaemon.
+ * @path: The object path of the object to examine.
+ * @uuid_ret: Place to return the UUID of the parent.
+ *
+ * Type of functions that hook into #udisks_daemon_get_parent_for_tracking.
+ */
+typedef gchar *(*UDisksTrackParentFunc) (UDisksDaemon  *daemon,
+                                         const gchar   *path,
+                                         gchar        **uuid_ret);
 
 #endif /* __UDISKS_DAEMON_TYPES_H__ */

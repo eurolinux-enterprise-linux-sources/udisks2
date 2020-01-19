@@ -34,6 +34,28 @@ UDisksBlock *udisks_linux_block_new      (void);
 void         udisks_linux_block_update   (UDisksLinuxBlock       *block,
                                           UDisksLinuxBlockObject *object);
 
+void         udisks_linux_block_handle_format (UDisksBlock            *block,
+                                               GDBusMethodInvocation  *invocation,
+                                               const gchar            *type,
+                                               GVariant               *options,
+                                               void                  (*complete)(gpointer user_data),
+                                               gpointer                complete_user_data);
+
+gchar       *udisks_linux_get_parent_for_tracking (UDisksDaemon *daemon,
+                                                   const gchar    *path,
+                                                   const gchar   **uuid_ret);
+
+GVariant    *udisks_linux_find_child_configuration (UDisksDaemon *daemon,
+                                                    const gchar    *uuid);
+
+gboolean     udisks_linux_remove_configuration (GVariant       *configuration,
+                                                GError        **error);
+
+gboolean     udisks_linux_block_teardown (UDisksBlock            *block,
+                                          GDBusMethodInvocation  *invocation,
+                                          GVariant               *options,
+                                          GError                **error);
+
 G_END_DECLS
 
 #endif /* __UDISKS_LINUX_BLOCK_H__ */

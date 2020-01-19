@@ -2,11 +2,11 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>UDisks Reference Manual</title>
-<meta name="generator" content="DocBook XSL Stylesheets V1.78.1">
+<title>UDisks Reference Manual: UDisks Reference Manual</title>
+<meta name="generator" content="DocBook XSL Stylesheets Vsnapshot">
 <link rel="home" href="index.html" title="UDisks Reference Manual">
 <link rel="next" href="overview.html" title="Part I. Manual pages and Overview">
-<meta name="generator" content="GTK-Doc V1.19 (XML mode)">
+<meta name="generator" content="GTK-Doc V1.25 (XML mode)">
 <link rel="stylesheet" href="style.css" type="text/css">
 </head>
 <body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF">
@@ -15,9 +15,9 @@
 <div>
 <div><table class="navigation" id="top" width="100%" cellpadding="2" cellspacing="0"><tr><th valign="middle"><p class="title">UDisks Reference Manual</p></th></tr></table></div>
 <div><p class="releaseinfo">
-      For version 2.1.2
+      For version 2.7.3
  — the latest version of this
-      documentation can be found at <a class="ulink" href="http://udisks.freedesktop.org/docs/latest/" target="_top">http://udisks.freedesktop.org/docs/latest/</a>.
+      documentation can be found at <a class="ulink" href="http://storaged.org/doc/udisks2-api/latest/" target="_top">http://storaged.org/doc/udisks2-api/latest/</a>.
     </p></div>
 </div>
 <hr>
@@ -26,13 +26,22 @@
 <dt><span class="part"><a href="overview.html">I. Manual pages and Overview</a></span></dt>
 <dd><dl>
 <dt>
+<span class="refentrytitle"><a href="udiskd.8.html">udisksd</a></span><span class="refpurpose"> — The udisks system daemon</span>
+</dt>
+<dt>
 <span class="refentrytitle"><a href="udisks.8.html">udisks</a></span><span class="refpurpose"> — Disk Manager</span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="udisksd.8.html">udisksd</a></span><span class="refpurpose"> — The udisks system daemon</span>
+<span class="refentrytitle"><a href="udisksctl.1.html">udisksctl</a></span><span class="refpurpose"> — The udisks command line tool</span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="udisksctl.1.html">udisksctl</a></span><span class="refpurpose"> — The udisks command line tool</span>
+<span class="refentrytitle"><a href="umount.udisks2.8.html">umount.udisks2</a></span><span class="refpurpose"> — unmount file systems that have been mounted by UDisks2</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2.conf.5.html">udisks2.conf</a></span><span class="refpurpose"> — The udisks2 configuration file</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2_lsm.conf.5.html">udisks2_lsm.conf</a></span><span class="refpurpose"> — The UDisks2 LSM Module configuration file</span>
 </dt>
 </dl></dd>
 <dt><span class="part"><a href="ref-dbus.html">II. D-Bus API Reference</a></span></dt>
@@ -45,6 +54,7 @@
 <dt><span class="sect1"><a href="ref-dbus-block-devices.html">The /org/freedesktop/UDisks2/block_devices/* objects</a></span></dt>
 <dt><span class="sect1"><a href="ref-dbus-drives.html">The /org/freedesktop/UDisks2/drives/* objects</a></span></dt>
 <dt><span class="sect1"><a href="ref-dbus-md-raid.html">The /org/freedesktop/UDisks2/mdraid/* objects</a></span></dt>
+<dt><span class="sect1"><a href="ref-iscsi-session.html">The /org/freedesktop/UDisks2/iscsi/session[0-9]+ objects</a></span></dt>
 <dt><span class="sect1"><a href="ref-dbus-jobs.html">The /org/freedesktop/UDisks2/jobs/* objects</a></span></dt>
 <dt><span class="sect1"><a href="udisks-polkit-actions.html">Authorization Checks</a></span></dt>
 <dt><span class="sect1"><a href="udisks-std-options.html">The <em class="parameter"><code>options</code></em> parameter</a></span></dt>
@@ -86,6 +96,54 @@
 </dt>
 <dt>
 <span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Job.html">org.freedesktop.UDisks2.Job</a></span><span class="refpurpose"> — Long-running tasks</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.LSM.html">org.freedesktop.UDisks2.Manager.LSM</a></span><span class="refpurpose"> — LSM add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Drive.LSM.html">org.freedesktop.UDisks2.Drive.LSM</a></span><span class="refpurpose"> — LSM interface exported on disk objects</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Drive.LsmLocal.html">org.freedesktop.UDisks2.Drive.LsmLocal</a></span><span class="refpurpose"> — Interface exported on disk drive objects for managing</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Block.LVM2.html">org.freedesktop.UDisks2.Block.LVM2</a></span><span class="refpurpose"> — LVM2 add-on to the block device</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.LogicalVolume.html">org.freedesktop.UDisks2.LogicalVolume</a></span><span class="refpurpose"> — A logical volume</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.LVM2.html">org.freedesktop.UDisks2.Manager.LVM2</a></span><span class="refpurpose"> — LVM2 add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.PhysicalVolume.html">org.freedesktop.UDisks2.PhysicalVolume</a></span><span class="refpurpose"> — Block device that is a physical volume</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.VolumeGroup.html">org.freedesktop.UDisks2.VolumeGroup</a></span><span class="refpurpose"> — A volume group</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.ISCSI.Session.html">org.freedesktop.UDisks2.ISCSI.Session</a></span><span class="refpurpose"> — iSCSI session.</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.ISCSI.Initiator.html">org.freedesktop.UDisks2.Manager.ISCSI.Initiator</a></span><span class="refpurpose"> — iSCSI add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.BTRFS.html">org.freedesktop.UDisks2.Manager.BTRFS</a></span><span class="refpurpose"> — BTRFS add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Filesystem.BTRFS.html">org.freedesktop.UDisks2.Filesystem.BTRFS</a></span><span class="refpurpose"> — BTRFS filesystem interface exported on block objects</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.ZRAM.html">org.freedesktop.UDisks2.Manager.ZRAM</a></span><span class="refpurpose"> — ZRAM add-on to the manager singleton</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Block.ZRAM.html">org.freedesktop.UDisks2.Block.ZRAM</a></span><span class="refpurpose"> — ZRAM block device</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Manager.Bcache.html">org.freedesktop.UDisks2.Manager.Bcache</a></span><span class="refpurpose"></span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="gdbus-org.freedesktop.UDisks2.Block.Bcache.html">org.freedesktop.UDisks2.Block.Bcache</a></span><span class="refpurpose"> — A bcache block device</span>
 </dt>
 </dl></dd>
 </dl></dd>
@@ -144,6 +202,54 @@
 <dt>
 <span class="refentrytitle"><a href="UDisksLoop.html">UDisksLoop</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Loop D-Bus interface</span>
 </dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksManagerLSM.html">UDisksManagerLSM</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Manager.LSM D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksDriveLSM.html">UDisksDriveLSM</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Drive.LSM D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksDriveLsmLocal.html">UDisksDriveLsmLocal</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Drive.LsmLocal D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksManagerLVM2.html">UDisksManagerLVM2</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Manager.LVM2 D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksBlockLVM2.html">UDisksBlockLVM2</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Block.LVM2 D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksPhysicalVolume.html">UDisksPhysicalVolume</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.PhysicalVolume D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksVolumeGroup.html">UDisksVolumeGroup</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.VolumeGroup D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksLogicalVolume.html">UDisksLogicalVolume</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.LogicalVolume D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksISCSISession.html">UDisksISCSISession</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.ISCSI.Session D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksManagerISCSIInitiator.html">UDisksManagerISCSIInitiator</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Manager.ISCSI.Initiator D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksManagerBTRFS.html">UDisksManagerBTRFS</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Manager.BTRFS D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksFilesystemBTRFS.html">UDisksFilesystemBTRFS</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Filesystem.BTRFS D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksManagerZRAM.html">UDisksManagerZRAM</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Manager.ZRAM D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksBlockZRAM.html">UDisksBlockZRAM</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Block.ZRAM D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksManagerBcache.html">UDisksManagerBcache</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Manager.Bcache D-Bus interface</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="UDisksBlockBcache.html">UDisksBlockBcache</a></span><span class="refpurpose"> — Generated C code for the org.freedesktop.UDisks2.Block.Bcache D-Bus interface</span>
+</dt>
 </dl></dd>
 </dl></dd>
 <dt><span class="part"><a href="ref-daemon.html">IV. Daemon Implementation Details</a></span></dt>
@@ -167,6 +273,9 @@
 </dt>
 <dt>
 <span class="refentrytitle"><a href="udisks2-ATA-commands.html">ATA commands</a></span><span class="refpurpose"> — Helper routines for ATA commands</span>
+</dt>
+<dt>
+<span class="refentrytitle"><a href="udisks2-UDisksModuleManager.html">UDisksModuleManager</a></span><span class="refpurpose"> — Manages daemon modules</span>
 </dt>
 </dl></dd>
 <dt><span class="chapter"><a href="ref-daemon-monitoring.html">State and Configuration</a></span></dt>
@@ -199,7 +308,7 @@
 <dt><span class="chapter"><a href="ref-daemon-linux-types.html">Linux-specific types</a></span></dt>
 <dd><dl>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxManager.html">UDisksLinuxManager</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksManager</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxManager.html">UDisksLinuxManager</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksManager</span></span>
 </dt>
 <dt>
 <span class="refentrytitle"><a href="UDisksLinuxProvider.html">UDisksLinuxProvider</a></span><span class="refpurpose"> — Provides Linux-specific objects</span>
@@ -211,10 +320,10 @@
 <dt><span class="chapter"><a href="ref-daemon-drives.html">Drives on Linux</a></span></dt>
 <dd><dl>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxDrive.html">UDisksLinuxDrive</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksDrive</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxDrive.html">UDisksLinuxDrive</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksDrive</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxDriveAta.html">UDisksLinuxDriveAta</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksDriveAta</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxDriveAta.html">UDisksLinuxDriveAta</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksDriveAta</span></span>
 </dt>
 <dt>
 <span class="refentrytitle"><a href="UDisksLinuxDriveObject.html">UDisksLinuxDriveObject</a></span><span class="refpurpose"> — Object representing a drive on Linux</span>
@@ -223,7 +332,7 @@
 <dt><span class="chapter"><a href="ref-daemon-mdraid.html">Linux RAID</a></span></dt>
 <dd><dl>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxMDRaid.html">UDisksLinuxMDRaid</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksMDRaid</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxMDRaid.html">UDisksLinuxMDRaid</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksMDRaid</span></span>
 </dt>
 <dt>
 <span class="refentrytitle"><a href="UDisksLinuxMDRaidObject.html">UDisksLinuxMDRaidObject</a></span><span class="refpurpose"> — Object representing a Linux Software RAID array</span>
@@ -232,25 +341,25 @@
 <dt><span class="chapter"><a href="ref-daemon-block-devices.html">Block devices on Linux</a></span></dt>
 <dd><dl>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxBlock.html">UDisksLinuxBlock</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksBlock</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxBlock.html">UDisksLinuxBlock</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksBlock</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxPartition.html">UDisksLinuxPartition</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksPartition</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxPartition.html">UDisksLinuxPartition</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksPartition</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxPartitionTable.html">UDisksLinuxPartitionTable</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksPartitionTable</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxPartitionTable.html">UDisksLinuxPartitionTable</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksPartitionTable</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxFilesystem.html">UDisksLinuxFilesystem</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksFilesystem</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxFilesystem.html">UDisksLinuxFilesystem</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksFilesystem</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxEncrypted.html">UDisksLinuxEncrypted</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksEncrypted</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxEncrypted.html">UDisksLinuxEncrypted</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksEncrypted</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxSwapspace.html">UDisksLinuxSwapspace</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksSwapspace</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxSwapspace.html">UDisksLinuxSwapspace</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksSwapspace</span></span>
 </dt>
 <dt>
-<span class="refentrytitle"><a href="UDisksLinuxLoop.html">UDisksLinuxLoop</a></span><span class="refpurpose">Linux implementation of <span class="type">UDisksLoop</span></span>
+<span class="refentrytitle"><a href="UDisksLinuxLoop.html">UDisksLinuxLoop</a></span><span class="refpurpose"> — Linux implementation of <span class="type">UDisksLoop</span></span>
 </dt>
 <dt>
 <span class="refentrytitle"><a href="UDisksLinuxBlockObject.html">UDisksLinuxBlockObject</a></span><span class="refpurpose"> — Object representing a block device on Linux.</span>
@@ -258,13 +367,11 @@
 </dl></dd>
 </dl></dd>
 <dt><span class="index"><a href="api-index.html">Index</a></span></dt>
-<dt><span class="index"><a href="api-index-deprecated.html">Index of deprecated symbols</a></span></dt>
-<dt><span class="index"><a href="api-index-2.1.html">Index of new symbols in 2.1</a></span></dt>
+<dt><span class="glossary"><a href="annotation-glossary.html">Annotation Glossary</a></span></dt>
 <dt><span class="chapter"><a href="gio-hierarchy.html">Object Hierarchy</a></span></dt>
 </dl></div>
 </div>
 <div class="footer">
-<hr>
-          Generated by GTK-Doc V1.19</div>
+<hr>Generated by GTK-Doc V1.25</div>
 </body>
 </html>

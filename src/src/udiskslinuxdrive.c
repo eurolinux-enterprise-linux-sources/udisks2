@@ -25,6 +25,12 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <errno.h>
+#include <linux/bsg.h>
+#include <scsi/scsi.h>
+#include <scsi/sg.h>
+#include <scsi/scsi_ioctl.h>
 
 #include <pwd.h>
 #include <grp.h>
@@ -210,11 +216,12 @@ typedef struct {
   const GVariantType *type;
 } VariantKeyfileMapping;
 
-static const VariantKeyfileMapping drive_configuration_mapping[4] = {
-  {"ata-pm-standby",          "ATA", "StandbyTimeout",    G_VARIANT_TYPE_INT32},
-  {"ata-apm-level",           "ATA", "APMLevel",          G_VARIANT_TYPE_INT32},
-  {"ata-aam-level",           "ATA", "AAMLevel",          G_VARIANT_TYPE_INT32},
-  {"ata-write-cache-enabled", "ATA", "WriteCacheEnabled", G_VARIANT_TYPE_BOOLEAN},
+static const VariantKeyfileMapping drive_configuration_mapping[5] = {
+  {"ata-pm-standby",             "ATA", "StandbyTimeout",       G_VARIANT_TYPE_INT32},
+  {"ata-apm-level",              "ATA", "APMLevel",             G_VARIANT_TYPE_INT32},
+  {"ata-aam-level",              "ATA", "AAMLevel",             G_VARIANT_TYPE_INT32},
+  {"ata-write-cache-enabled",    "ATA", "WriteCacheEnabled",    G_VARIANT_TYPE_BOOLEAN},
+  {"ata-read-lookahead-enabled", "ATA", "ReadLookaheadEnabled", G_VARIANT_TYPE_BOOLEAN},
 };
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -228,6 +235,15 @@ configuration_get_path (UDisksLinuxDrive *drive)
   id = udisks_drive_get_id (UDISKS_DRIVE (drive));
   if (id == NULL || strlen (id) == 0)
     goto out;
+
+  /* if prefix is specified directories may not exist */
+  if (!g_file_test (PACKAGE_SYSCONF_DIR "/udisks2", G_FILE_TEST_IS_DIR))
+    {
+      if (g_mkdir_with_parents (PACKAGE_SYSCONF_DIR "/udisks2", 0700) != 0)
+        {
+          udisks_critical ("Error creating directory %s: %m", PACKAGE_SYSCONF_DIR "/udisks2");
+        }
+    }
 
   path = g_strdup_printf (PACKAGE_SYSCONF_DIR "/udisks2/%s.conf", id);
 
@@ -261,7 +277,7 @@ update_configuration (UDisksLinuxDrive       *drive,
     {
       if (!g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
         {
-          udisks_error ("Error loading drive config file: %s (%s, %d)",
+          udisks_critical ("Error loading drive config file: %s (%s, %d)",
                         error->message, g_quark_to_string (error->domain), error->code);
         }
       g_clear_error (&error);
@@ -281,7 +297,7 @@ update_configuration (UDisksLinuxDrive       *drive,
           gint32 int_value = g_key_file_get_integer (key_file, mapping->group, mapping->key, &error);
           if (error != NULL)
             {
-              udisks_error ("Error parsing int32 key %s in group %s in drive config file %s: %s (%s, %d)",
+              udisks_critical ("Error parsing int32 key %s in group %s in drive config file %s: %s (%s, %d)",
                             mapping->key, mapping->group, path,
                             error->message, g_quark_to_string (error->domain), error->code);
               g_clear_error (&error);
@@ -296,7 +312,7 @@ update_configuration (UDisksLinuxDrive       *drive,
           gboolean bool_value = g_key_file_get_boolean (key_file, mapping->group, mapping->key, &error);
           if (error != NULL)
             {
-              udisks_error ("Error parsing boolean key %s in group %s in drive config file %s: %s (%s, %d)",
+              udisks_critical ("Error parsing boolean key %s in group %s in drive config file %s: %s (%s, %d)",
                             mapping->key, mapping->group, path,
                             error->message, g_quark_to_string (error->domain), error->code);
               g_clear_error (&error);
@@ -315,6 +331,8 @@ update_configuration (UDisksLinuxDrive       *drive,
   value = g_variant_ref_sink (g_variant_builder_end (&builder));
 
  out:
+  g_free (path);
+
   old_value = udisks_drive_get_configuration (UDISKS_DRIVE (drive));
   if (!_g_variant_equal0 (old_value, value))
     ret = TRUE;
@@ -684,6 +702,7 @@ udisks_linux_drive_update (UDisksLinuxDrive       *drive,
   gboolean ret = FALSE;
   UDisksDrive *iface = UDISKS_DRIVE (drive);
   UDisksLinuxDevice *device;
+  const gchar *serial = NULL;
   guint64 size;
   gboolean media_available;
   gboolean media_change_detected;
@@ -715,7 +734,6 @@ udisks_linux_drive_update (UDisksLinuxDrive       *drive,
   if (g_udev_device_get_property_as_boolean (device->udev_device, "ID_ATA"))
     {
       const gchar *model;
-      const gchar *serial;
 
       model = g_udev_device_get_property (device->udev_device, "ID_MODEL_ENC");
       if (model != NULL)
@@ -727,13 +745,8 @@ udisks_linux_drive_update (UDisksLinuxDrive       *drive,
           g_free (s);
         }
 
-      serial = g_udev_device_get_property (device->udev_device, "ID_SERIAL_SHORT");
-      if (serial == NULL)
-        serial = g_udev_device_get_property (device->udev_device, "ID_SERIAL");
-
       udisks_drive_set_vendor (iface, "");
       udisks_drive_set_revision (iface, g_udev_device_get_property (device->udev_device, "ID_REVISION"));
-      udisks_drive_set_serial (iface, serial);
       udisks_drive_set_wwn (iface, g_udev_device_get_property (device->udev_device, "ID_WWN_WITH_EXTENSION"));
     }
   else if (g_udev_device_get_property_as_boolean (device->udev_device, "ID_SCSI"))
@@ -762,14 +775,13 @@ udisks_linux_drive_update (UDisksLinuxDrive       *drive,
         }
 
       udisks_drive_set_revision (iface, g_udev_device_get_property (device->udev_device, "ID_REVISION"));
-      udisks_drive_set_serial (iface, g_udev_device_get_property (device->udev_device, "ID_SCSI_SERIAL"));
+      serial = g_udev_device_get_property (device->udev_device, "ID_SCSI_SERIAL");
       udisks_drive_set_wwn (iface, g_udev_device_get_property (device->udev_device, "ID_WWN_WITH_EXTENSION"));
     }
   else if (g_str_has_prefix (g_udev_device_get_name (device->udev_device), "mmcblk"))
     {
       /* sigh, mmc is non-standard and using ID_NAME instead of ID_MODEL.. */
       udisks_drive_set_model (iface, g_udev_device_get_property (device->udev_device, "ID_NAME"));
-      udisks_drive_set_serial (iface, g_udev_device_get_property (device->udev_device, "ID_SERIAL"));
       /* TODO:
        *  - lookup Vendor from manfid and oemid in sysfs
        *  - lookup Revision from fwrev and hwrev in sysfs
@@ -780,7 +792,6 @@ udisks_linux_drive_update (UDisksLinuxDrive       *drive,
       const gchar *vendor;
       const gchar *model;
       const gchar *name;
-      const gchar *serial;
 
       name = g_udev_device_get_name (device->udev_device);
 
@@ -842,17 +853,19 @@ udisks_linux_drive_update (UDisksLinuxDrive       *drive,
             }
         }
 
-      serial = g_udev_device_get_property (device->udev_device, "ID_SERIAL_SHORT");
-      if (serial == NULL)
-        serial = g_udev_device_get_property (device->udev_device, "ID_SERIAL");
-
       udisks_drive_set_revision (iface, g_udev_device_get_property (device->udev_device, "ID_REVISION"));
-      udisks_drive_set_serial (iface, serial);
       if (g_udev_device_has_property (device->udev_device, "ID_WWN_WITH_EXTENSION"))
         udisks_drive_set_wwn (iface, g_udev_device_get_property (device->udev_device, "ID_WWN_WITH_EXTENSION"));
       else
         udisks_drive_set_wwn (iface, g_udev_device_get_property (device->udev_device, "ID_WWN"));
     }
+
+  /* try to find a serial number if we don't have one yet */
+  if (serial == NULL)
+    serial = g_udev_device_get_property (device->udev_device, "ID_SERIAL_SHORT");
+  if (serial == NULL)
+    serial = g_udev_device_get_property (device->udev_device, "ID_SERIAL");
+  udisks_drive_set_serial (iface, serial);
 
   /* common bits go here */
   size = udisks_daemon_util_block_get_size (device->udev_device,
@@ -952,7 +965,6 @@ handle_eject (UDisksDrive           *_drive,
   gchar *escaped_device = NULL;
   uid_t caller_uid;
   gid_t caller_gid;
-  pid_t caller_pid;
 
   object = udisks_daemon_util_dup_object (drive, &error);
   if (object == NULL)
@@ -982,18 +994,6 @@ handle_eject (UDisksDrive           *_drive,
     }
 
   error = NULL;
-  if (!udisks_daemon_util_get_caller_pid_sync (daemon,
-                                               invocation,
-                                               NULL /* GCancellable */,
-                                               &caller_pid,
-                                               &error))
-    {
-      g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  error = NULL;
   if (!udisks_daemon_util_get_caller_uid_sync (daemon,
                                                invocation,
                                                NULL /* GCancellable */,
@@ -1003,7 +1003,7 @@ handle_eject (UDisksDrive           *_drive,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1019,7 +1019,7 @@ handle_eject (UDisksDrive           *_drive,
     {
       action_id = "org.freedesktop.udisks2.eject-media-system";
     }
-  else if (!udisks_daemon_util_on_same_seat (daemon, UDISKS_OBJECT (object), caller_pid))
+  else if (!udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
     {
       action_id = "org.freedesktop.udisks2.eject-media-other-seat";
     }
@@ -1174,7 +1174,7 @@ handle_set_configuration (UDisksDrive           *_drive,
                                              data,
                                              data_len,
                                              0600, /* mode to use if non-existant */
-                                             &error) != 0)
+                                             &error))
     {
       g_dbus_method_invocation_take_error (invocation, error);
       goto out;
@@ -1188,6 +1188,136 @@ handle_set_configuration (UDisksDrive           *_drive,
   g_free (path);
   g_clear_object (&object);
   return TRUE; /* returning TRUE means that we handled the method invocation */
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+/* TODO: move to udisksscsi.[ch] similar what we do for ATA with udisksata.[ch] */
+
+static gboolean
+send_scsi_command_sync (gint      fd,
+                        guint8   *cdb,
+                        gsize     cdb_len,
+                        GError  **error)
+{
+  struct sg_io_v4 io_v4;
+  uint8_t sense[32];
+  gboolean ret = FALSE;
+  gint rc;
+  gint timeout_msec = 30000; /* 30 seconds */
+
+  g_return_val_if_fail (fd != -1, FALSE);
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+
+  /* See http://sg.danny.cz/sg/sg_io.html and http://www.tldp.org/HOWTO/SCSI-Generic-HOWTO/index.html
+   * for detailed information about how the SG_IO ioctl work
+   */
+
+  memset (sense, 0, sizeof (sense));
+  memset (&io_v4, 0, sizeof (io_v4));
+  io_v4.guard = 'Q';
+  io_v4.protocol = BSG_PROTOCOL_SCSI;
+  io_v4.subprotocol = BSG_SUB_PROTOCOL_SCSI_CMD;
+  io_v4.request_len = cdb_len;
+  io_v4.request = (uintptr_t) cdb;
+  io_v4.max_response_len = sizeof (sense);
+  io_v4.response = (uintptr_t) sense;
+  io_v4.timeout = timeout_msec;
+
+  rc = ioctl (fd, SG_IO, &io_v4);
+  if (rc != 0)
+    {
+      /* could be that the driver doesn't do version 4, try version 3 */
+      if (errno == EINVAL)
+        {
+          struct sg_io_hdr io_hdr;
+          memset (&io_hdr, 0, sizeof (struct sg_io_hdr));
+          io_hdr.interface_id = 'S';
+          io_hdr.cmdp = (unsigned char*) cdb;
+          io_hdr.cmd_len = cdb_len;
+          io_hdr.dxfer_direction = SG_DXFER_NONE;
+          io_hdr.sbp = sense;
+          io_hdr.mx_sb_len = sizeof (sense);
+          io_hdr.timeout = timeout_msec;
+
+          rc = ioctl (fd, SG_IO, &io_hdr);
+          if (rc != 0)
+            {
+              g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                           "SGIO v3 ioctl failed (v4 not supported): %m");
+              goto out;
+            }
+          else
+            {
+              if (!(io_hdr.status == 0 &&
+                    io_hdr.host_status == 0 &&
+                    io_hdr.driver_status == 0))
+                {
+                  g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "Non-GOOD SCSI status from SGIO v3 ioctl: "
+                               "status=%d host_status=%d driver_status=%d",
+                               io_hdr.status,
+                               io_hdr.host_status,
+                               io_hdr.driver_status);
+                  goto out;
+                }
+            }
+        }
+      else
+        {
+          g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                       "SGIO v4 ioctl failed: %m");
+          goto out;
+        }
+    }
+  else
+    {
+      if (!(io_v4.device_status == 0 &&
+            io_v4.transport_status == 0 &&
+            io_v4.driver_status == 0))
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                       "Non-GOOD SCSI status from SGIO v4 ioctl: "
+                       "device_status=%u transport_status=%u driver_status=%u",
+                       io_v4.device_status,
+                       io_v4.transport_status,
+                       io_v4.driver_status);
+          goto out;
+        }
+    }
+
+  ret = TRUE;
+
+ out:
+  return ret;
+}
+
+static gboolean
+send_scsi_synchronize_cache_command_sync (gint      fd,
+                                          GError  **error)
+{
+  uint8_t cdb[10];
+
+  /* SBC3 (SCSI Block Commands), 5.18 SYNCHRONIZE CACHE (10) command
+   */
+  memset (cdb, 0, sizeof cdb);
+  cdb[0] = 0x35;                        /* OPERATION CODE: SYNCHRONIZE CACHE (10) */
+
+  return send_scsi_command_sync (fd, cdb, sizeof cdb, error);
+}
+
+static gboolean
+send_scsi_start_stop_unit_command_sync (gint      fd,
+                                        GError  **error)
+{
+  uint8_t cdb[6];
+
+  /* SBC3 (SCSI Block Commands), 5.20 START STOP UNIT command
+   */
+  memset (cdb, 0, sizeof cdb);
+  cdb[0] = 0x1b;                        /* OPERATION CODE: START STOP UNIT */
+
+  return send_scsi_command_sync (fd, cdb, sizeof cdb, error);
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -1214,8 +1344,8 @@ handle_power_off (UDisksDrive           *_drive,
   gchar *escaped_device = NULL;
   uid_t caller_uid;
   gid_t caller_gid;
-  pid_t caller_pid;
   GList *sibling_objects = NULL, *l;
+  gint fd = -1;
 
   object = udisks_daemon_util_dup_object (drive, &error);
   if (object == NULL)
@@ -1268,18 +1398,6 @@ handle_power_off (UDisksDrive           *_drive,
     }
 
   error = NULL;
-  if (!udisks_daemon_util_get_caller_pid_sync (daemon,
-                                               invocation,
-                                               NULL /* GCancellable */,
-                                               &caller_pid,
-                                               &error))
-    {
-      g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  error = NULL;
   if (!udisks_daemon_util_get_caller_uid_sync (daemon,
                                                invocation,
                                                NULL /* GCancellable */,
@@ -1289,7 +1407,7 @@ handle_power_off (UDisksDrive           *_drive,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1305,7 +1423,7 @@ handle_power_off (UDisksDrive           *_drive,
     {
       action_id = "org.freedesktop.udisks2.power-off-drive-system";
     }
-  else if (!udisks_daemon_util_on_same_seat (daemon, UDISKS_OBJECT (object), caller_pid))
+  else if (!udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
     {
       action_id = "org.freedesktop.udisks2.power-off-drive-other-seat";
     }
@@ -1324,10 +1442,10 @@ handle_power_off (UDisksDrive           *_drive,
     {
       UDisksBlock *block_to_sync = UDISKS_BLOCK (l->data);
       const gchar *device_file;
-      gint fd;
+      gint device_fd;
       device_file = udisks_block_get_device (block_to_sync);
-      fd = open (device_file, O_RDONLY|O_NONBLOCK|O_EXCL);
-      if (fd == -1)
+      device_fd = open (device_file, O_RDONLY|O_NONBLOCK|O_EXCL);
+      if (device_fd == -1)
         {
           g_dbus_method_invocation_return_error (invocation,
                                                  UDISKS_ERROR,
@@ -1336,7 +1454,7 @@ handle_power_off (UDisksDrive           *_drive,
                                                  device_file);
           goto out;
         }
-      if (fsync (fd) != 0)
+      if (fsync (device_fd) != 0)
         {
           g_dbus_method_invocation_return_error (invocation,
                                                  UDISKS_ERROR,
@@ -1345,7 +1463,7 @@ handle_power_off (UDisksDrive           *_drive,
                                                  device_file);
           goto out;
         }
-      if (close (fd) != 0)
+      if (close (device_fd) != 0)
         {
           g_dbus_method_invocation_return_error (invocation,
                                                  UDISKS_ERROR,
@@ -1356,9 +1474,61 @@ handle_power_off (UDisksDrive           *_drive,
         }
     }
 
-  escaped_device = udisks_daemon_util_escape_and_quote (udisks_block_get_device (block));
+  /* Send the "SCSI SYNCHRONIZE CACHE" and then the "SCSI START STOP
+   * UNIT" command to request that the unit be stopped. Don't treat
+   * failures as fatal. In fact some USB-attached hard-disks fails
+   * with one or both of these commands, probably due to the SCSI/SATA
+   * translation layer.
+   */
+  fd = open (udisks_block_get_device (block), O_RDONLY|O_NONBLOCK|O_EXCL);
+  if (fd == -1)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Error opening %s: %m",
+                                             udisks_block_get_device (block));
+      goto out;
+    }
 
-  /* TODO: Send the eject? Send SCSI START STOP UNIT? */
+  if (!send_scsi_synchronize_cache_command_sync (fd, &error))
+    {
+      udisks_warning ("Ignoring SCSI command SYNCHRONIZE CACHE failure (%s) on %s",
+                      error->message,
+                      udisks_block_get_device (block));
+      g_clear_error (&error);
+    }
+  else
+    {
+      udisks_notice ("Successfully sent SCSI command SYNCHRONIZE CACHE to %s",
+                     udisks_block_get_device (block));
+    }
+
+  if (!send_scsi_start_stop_unit_command_sync (fd, &error))
+    {
+      udisks_warning ("Ignoring SCSI command START STOP UNIT failure (%s) on %s",
+                      error->message,
+                      udisks_block_get_device (block));
+      g_clear_error (&error);
+    }
+  else
+    {
+      udisks_notice ("Successfully sent SCSI command START STOP UNIT to %s",
+                     udisks_block_get_device (block));
+    }
+
+  if (close (fd) != 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Error closing %s: %m",
+                                             udisks_block_get_device (block));
+      goto out;
+    }
+  fd = -1;
+
+  escaped_device = udisks_daemon_util_escape_and_quote (udisks_block_get_device (block));
   device = udisks_linux_drive_object_get_device (object, TRUE /* get_hw */);
   if (device == NULL)
     {
@@ -1405,10 +1575,20 @@ handle_power_off (UDisksDrive           *_drive,
         }
     }
   fclose (f);
+  udisks_notice ("Powered off %s - successfully wrote to sysfs path %s",
+                 udisks_block_get_device (block),
+                 remove_path);
 
   udisks_drive_complete_power_off (UDISKS_DRIVE (drive), invocation);
 
  out:
+  if (fd != -1)
+    {
+      if (close (fd) != 0)
+        {
+          udisks_warning ("Error closing device: %m");
+        }
+    }
   g_list_free_full (blocks_to_sync, g_object_unref);
   g_list_free_full (sibling_objects, g_object_unref);
   g_free (remove_path);

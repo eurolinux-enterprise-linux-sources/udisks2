@@ -34,6 +34,7 @@
 #include "udisksspawnedjob.h"
 #include "udisks-daemon-marshal.h"
 #include "udisksdaemon.h"
+#include "udisksdaemonutil.h"
 
 /**
  * SECTION:udisksspawnedjob
@@ -61,9 +62,14 @@ struct _UDisksSpawnedJob
 
   GMainContext *main_context;
 
-  gchar *input_string;
+  GString *input_string;
+
   uid_t run_as_uid;
   uid_t run_as_euid;
+  gid_t real_egid;
+  gid_t real_gid;
+  uid_t real_uid;
+  char *real_pwname;
   const gchar *input_string_cursor;
 
   GPid child_pid;
@@ -125,6 +131,15 @@ static void udisks_spawned_job_release_resources (UDisksSpawnedJob *job);
 G_DEFINE_TYPE_WITH_CODE (UDisksSpawnedJob, udisks_spawned_job, UDISKS_TYPE_BASE_JOB,
                          G_IMPLEMENT_INTERFACE (UDISKS_TYPE_JOB, job_iface_init));
 
+typedef GString AutowipeBuffer;
+static GType autowipe_buffer_get_type (void);
+static void autowipe_buffer_free (gpointer data);
+static gpointer autowipe_buffer_copy (gpointer data);
+
+G_DEFINE_BOXED_TYPE (AutowipeBuffer, autowipe_buffer,
+                     autowipe_buffer_copy,
+                     autowipe_buffer_free);
+
 static void
 udisks_spawned_job_finalize (GObject *object)
 {
@@ -137,12 +152,8 @@ udisks_spawned_job_finalize (GObject *object)
 
   g_free (job->command_line);
 
-  /* input string may contain key material - nuke contents */
   if (job->input_string != NULL)
-    {
-      memset (job->input_string, '\0', strlen (job->input_string));
-      g_free (job->input_string);
-    }
+    g_boxed_free (autowipe_buffer_get_type (), (gpointer) job->input_string);
 
   if (G_OBJECT_CLASS (udisks_spawned_job_parent_class)->finalize != NULL)
     G_OBJECT_CLASS (udisks_spawned_job_parent_class)->finalize (object);
@@ -185,7 +196,11 @@ udisks_spawned_job_set_property (GObject      *object,
 
     case PROP_INPUT_STRING:
       g_assert (job->input_string == NULL);
-      job->input_string = g_value_dup_string (value);
+      job->input_string = (GString*) g_value_dup_boxed (value);
+      if (job->input_string != NULL)
+        {
+          job->input_string_cursor = job->input_string->str;
+        }
       break;
 
     case PROP_RUN_AS_UID:
@@ -225,7 +240,7 @@ emit_completed_with_error_in_idle_cb (gpointer user_data)
                  data->job->child_stderr,  /* standard_error */
                  &ret);
   g_object_unref (data->job);
-  g_error_free (data->error);
+  g_clear_error (&(data->error));
   g_free (data);
   return FALSE;
 }
@@ -264,7 +279,7 @@ on_cancelled (GCancellable *cancellable,
   error = NULL;
   g_warn_if_fail (g_cancellable_set_error_if_cancelled (cancellable, &error));
   emit_completed_with_error_in_idle (job, error);
-  g_error_free (error);
+  g_clear_error (&error);
 }
 
 static gboolean
@@ -302,8 +317,14 @@ write_child_stdin (GIOChannel *channel,
 {
   UDisksSpawnedJob *job = UDISKS_SPAWNED_JOB (user_data);
   gsize bytes_written;
+  gsize bytes_to_write = 0;
 
-  if (job->input_string_cursor == NULL || *job->input_string_cursor == '\0')
+  if (job->input_string != NULL)
+    {
+      bytes_to_write = job->input_string->len - (job->input_string_cursor - job->input_string->str);
+    }
+
+  if (job->input_string_cursor == NULL || bytes_to_write == 0)
     {
       /* nothing left to write; close our end so the child will get EOF */
       g_io_channel_unref (job->child_stdin_channel);
@@ -317,7 +338,7 @@ write_child_stdin (GIOChannel *channel,
 
   g_io_channel_write_chars (channel,
                             job->input_string_cursor,
-                            strlen (job->input_string_cursor),
+                            bytes_to_write,
                             &bytes_written,
                             NULL);
   g_io_channel_flush (channel, NULL);
@@ -371,26 +392,9 @@ static void
 child_setup (gpointer user_data)
 {
   UDisksSpawnedJob *job = UDISKS_SPAWNED_JOB (user_data);
-  struct passwd *pw;
-  gid_t egid;
 
   if (job->run_as_uid == getuid () && job->run_as_euid == geteuid ())
     goto out;
-
-  pw = getpwuid (job->run_as_euid);
-  if (pw == NULL)
-   {
-     g_printerr ("No password record for uid %d: %m\n", (gint) job->run_as_euid);
-     abort ();
-   }
-  egid = pw->pw_gid;
-
-  pw = getpwuid (job->run_as_uid);
-  if (pw == NULL)
-   {
-     g_printerr ("No password record for uid %d: %m\n", (gint) job->run_as_uid);
-     abort ();
-   }
 
   /* become the user...
    *
@@ -405,123 +409,24 @@ child_setup (gpointer user_data)
       g_printerr ("Error resetting groups: %m\n");
       abort ();
     }
-  if (initgroups (pw->pw_name, pw->pw_gid) != 0)
+  if (initgroups (job->real_pwname, job->real_gid) != 0)
     {
       g_printerr ("Error initializing groups for user %s and group %d: %m\n",
-                  pw->pw_name, (gint) pw->pw_gid);
+                  job->real_pwname, (gint) job->real_gid);
       abort ();
     }
-  if (setregid (pw->pw_gid, egid) != 0)
+  if (setregid (job->real_gid, job->real_egid) != 0)
     {
       g_printerr ("Error setting real+effective gid %d and %d: %m\n",
-                  (gint) pw->pw_gid, (gint) egid);
+                  (gint) job->real_gid, (gint) job->real_egid);
       abort ();
     }
-  if (setreuid (pw->pw_uid, job->run_as_euid) != 0)
+  if (setreuid (job->real_uid, job->run_as_euid) != 0)
     {
       g_printerr ("Error setting real+effective uid %d and %d: %m\n",
-                  (gint) pw->pw_uid, (gint) job->run_as_euid);
+                  (gint) job->real_uid, (gint) job->run_as_euid);
       abort ();
     }
-
- out:
-  ;
-}
-
-static void
-udisks_spawned_job_constructed (GObject *object)
-{
-  UDisksSpawnedJob *job = UDISKS_SPAWNED_JOB (object);
-  GError *error;
-  gint child_argc;
-  gchar **child_argv;
-
-  if (G_OBJECT_CLASS (udisks_spawned_job_parent_class)->constructed != NULL)
-    G_OBJECT_CLASS (udisks_spawned_job_parent_class)->constructed (object);
-
-  job->main_context = g_main_context_get_thread_default ();
-  if (job->main_context != NULL)
-    g_main_context_ref (job->main_context);
-
-  /* could already be cancelled */
-  error = NULL;
-  if (g_cancellable_set_error_if_cancelled (udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)), &error))
-    {
-      emit_completed_with_error_in_idle (job, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  job->cancellable_handler_id = g_cancellable_connect (udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)),
-                                                       G_CALLBACK (on_cancelled),
-                                                       job,
-                                                       NULL);
-
-  error = NULL;
-  if (!g_shell_parse_argv (job->command_line,
-                           &child_argc,
-                           &child_argv,
-                           &error))
-    {
-      g_prefix_error (&error,
-                      "Error parsing command-line `%s': ",
-                      job->command_line);
-      emit_completed_with_error_in_idle (job, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  error = NULL;
-  if (!g_spawn_async_with_pipes (NULL, /* working directory */
-                                 child_argv,
-                                 NULL, /* envp */
-                                 G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-                                 child_setup, /* child_setup */
-                                 job, /* child_setup's user_data */
-                                 &(job->child_pid),
-                                 job->input_string != NULL ? &(job->child_stdin_fd) : NULL,
-                                 &(job->child_stdout_fd),
-                                 &(job->child_stderr_fd),
-                                 &error))
-    {
-      g_prefix_error (&error,
-                      "Error spawning command-line `%s': ",
-                      job->command_line);
-      emit_completed_with_error_in_idle (job, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  job->child_watch_source = g_child_watch_source_new (job->child_pid);
-  g_source_set_callback (job->child_watch_source, (GSourceFunc) child_watch_cb, job, NULL);
-  g_source_attach (job->child_watch_source, job->main_context);
-  g_source_unref (job->child_watch_source);
-
-  if (job->child_stdin_fd != -1)
-    {
-      job->input_string_cursor = job->input_string;
-
-      job->child_stdin_channel = g_io_channel_unix_new (job->child_stdin_fd);
-      g_io_channel_set_flags (job->child_stdin_channel, G_IO_FLAG_NONBLOCK, NULL);
-      job->child_stdin_source = g_io_create_watch (job->child_stdin_channel, G_IO_OUT);
-      g_source_set_callback (job->child_stdin_source, (GSourceFunc) write_child_stdin, job, NULL);
-      g_source_attach (job->child_stdin_source, job->main_context);
-      g_source_unref (job->child_stdin_source);
-    }
-
-  job->child_stdout_channel = g_io_channel_unix_new (job->child_stdout_fd);
-  g_io_channel_set_flags (job->child_stdout_channel, G_IO_FLAG_NONBLOCK, NULL);
-  job->child_stdout_source = g_io_create_watch (job->child_stdout_channel, G_IO_IN);
-  g_source_set_callback (job->child_stdout_source, (GSourceFunc) read_child_stdout, job, NULL);
-  g_source_attach (job->child_stdout_source, job->main_context);
-  g_source_unref (job->child_stdout_source);
-
-  job->child_stderr_channel = g_io_channel_unix_new (job->child_stderr_fd);
-  g_io_channel_set_flags (job->child_stderr_channel, G_IO_FLAG_NONBLOCK, NULL);
-  job->child_stderr_source = g_io_create_watch (job->child_stderr_channel, G_IO_IN);
-  g_source_set_callback (job->child_stderr_source, (GSourceFunc) read_child_stderr, job, NULL);
-  g_source_attach (job->child_stderr_source, job->main_context);
-  g_source_unref (job->child_stderr_source);
 
  out:
   ;
@@ -546,7 +451,6 @@ udisks_spawned_job_class_init (UDisksSpawnedJobClass *klass)
 
   gobject_class = G_OBJECT_CLASS (klass);
   gobject_class->finalize     = udisks_spawned_job_finalize;
-  gobject_class->constructed  = udisks_spawned_job_constructed;
   gobject_class->set_property = udisks_spawned_job_set_property;
   gobject_class->get_property = udisks_spawned_job_get_property;
 
@@ -571,13 +475,16 @@ udisks_spawned_job_class_init (UDisksSpawnedJobClass *klass)
    *
    * String that will be written to stdin of the spawned program or
    * %NULL to not write anything.
+   *
+   * This is passed as autowipe_buffer (rather than G_TYPE_GSTRING) to nuke
+   * the contents after usage since the input string may contain key material.
    */
   g_object_class_install_property (gobject_class,
                                    PROP_INPUT_STRING,
-                                   g_param_spec_string ("input-string",
+                                   g_param_spec_boxed  ("input-string",
                                                         "Input String",
                                                         "String to write to stdin of the spawned program",
-                                                        NULL,
+                                                        autowipe_buffer_get_type (),
                                                         G_PARAM_WRITABLE |
                                                         G_PARAM_CONSTRUCT_ONLY |
                                                         G_PARAM_STATIC_STRINGS));
@@ -668,15 +575,18 @@ udisks_spawned_job_class_init (UDisksSpawnedJobClass *klass)
  *
  * Creates a new #UDisksSpawnedJob instance.
  *
- * The job is started immediately - connect to the
- * #UDisksSpawnedJob::spawned-job-completed or #UDisksJob::completed
- * signals to get notified when the job is done.
+ * The job is not started automatically! Use udisks_spawned_job_start() to start
+ * the job after #UDisksSpawnedJob::spawned-job-completed or
+ * #UDisksJob::completed signals are connected (to get notified when the job is
+ * done). This is to prevent a race condition with the spawned process
+ * terminating before the signals are connected in which case the signal
+ * handlers are never triggered.
  *
  * Returns: A new #UDisksSpawnedJob. Free with g_object_unref().
  */
 UDisksSpawnedJob *
 udisks_spawned_job_new (const gchar  *command_line,
-                        const gchar  *input_string,
+                        GString      *input_string,
                         uid_t         run_as_uid,
                         uid_t         run_as_euid,
                         UDisksDaemon *daemon,
@@ -959,5 +869,170 @@ udisks_spawned_job_release_resources (UDisksSpawnedJob *job)
       g_cancellable_disconnect (udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)), job->cancellable_handler_id);
       job->cancellable_handler_id = 0;
     }
+
+  if (job->real_pwname != NULL)
+    {
+      free (job->real_pwname);
+      job->real_pwname = NULL;
+    }
 }
 
+/**
+ * udisks_spawned_job_start:
+ * @job: the job to start
+ *
+ * Connect to the #UDisksSpawnedJob::spawned-job-completed or
+ * #UDisksJob::completed signals to get notified when the job is done.
+ *
+ * */
+void udisks_spawned_job_start (UDisksSpawnedJob *job)
+{
+  GError *error;
+  gint child_argc;
+  gchar **child_argv;
+  struct passwd pwstruct;
+  gchar pwbuf[8192];
+  struct passwd *pw = NULL;
+  int rc;
+
+  job->main_context = g_main_context_get_thread_default ();
+  if (job->main_context != NULL)
+    g_main_context_ref (job->main_context);
+
+  /* could already be cancelled */
+  error = NULL;
+  if (g_cancellable_set_error_if_cancelled (udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)), &error))
+    {
+      emit_completed_with_error_in_idle (job, error);
+      g_clear_error (&error);
+      goto out;
+    }
+
+  job->cancellable_handler_id = g_cancellable_connect (udisks_base_job_get_cancellable (UDISKS_BASE_JOB (job)),
+                                                       G_CALLBACK (on_cancelled),
+                                                       job,
+                                                       NULL);
+
+  error = NULL;
+  if (!g_shell_parse_argv (job->command_line,
+                           &child_argc,
+                           &child_argv,
+                           &error))
+    {
+      g_prefix_error (&error,
+                      "Error parsing command-line `%s': ",
+                      job->command_line);
+      emit_completed_with_error_in_idle (job, error);
+      g_clear_error (&error);
+      goto out;
+    }
+
+  /* Save real egid and gid info for the child process */
+  if (job->run_as_uid != getuid () || job->run_as_euid != geteuid ())
+    {
+      rc = getpwuid_r (job->run_as_euid, &pwstruct, pwbuf, sizeof pwbuf, &pw);
+      if (rc != 0 || pw == NULL)
+        {
+          g_set_error(&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                      "No password record for uid %d: %m\n", (gint) job->run_as_euid);
+          emit_completed_with_error_in_idle (job, error);
+          g_clear_error (&error);
+          goto out;
+        }
+      job->real_egid = pw->pw_gid;
+
+      rc = getpwuid_r (job->run_as_uid, &pwstruct, pwbuf, sizeof pwbuf, &pw);
+      if (rc != 0 || pw == NULL)
+        {
+          g_set_error(&error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                      "No password record for uid %d: %m\n", (gint) job->run_as_uid);
+          emit_completed_with_error_in_idle (job, error);
+          g_clear_error (&error);
+          goto out;
+        }
+      job->real_gid = pw->pw_gid;
+      job->real_uid = pw->pw_uid;
+      job->real_pwname = strdup (pw->pw_name);
+    }
+
+  error = NULL;
+  if (!g_spawn_async_with_pipes (NULL, /* working directory */
+                                 child_argv,
+                                 NULL, /* envp */
+                                 G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+                                 child_setup, /* child_setup */
+                                 job, /* child_setup's user_data */
+                                 &(job->child_pid),
+                                 job->input_string != NULL ? &(job->child_stdin_fd) : NULL,
+                                 &(job->child_stdout_fd),
+                                 &(job->child_stderr_fd),
+                                 &error))
+    {
+      g_prefix_error (&error,
+                      "Error spawning command-line `%s': ",
+                      job->command_line);
+      emit_completed_with_error_in_idle (job, error);
+      g_clear_error (&error);
+      goto out;
+    }
+
+  job->child_watch_source = g_child_watch_source_new (job->child_pid);
+  g_source_set_callback (job->child_watch_source, (GSourceFunc) child_watch_cb, job, NULL);
+  g_source_attach (job->child_watch_source, job->main_context);
+  g_source_unref (job->child_watch_source);
+
+  if (job->child_stdin_fd != -1)
+    {
+      if (job->input_string)
+        job->input_string_cursor = job->input_string->str;
+
+      job->child_stdin_channel = g_io_channel_unix_new (job->child_stdin_fd);
+      // we want to write binary, suppress checking the encoding:
+      g_io_channel_set_encoding (job->child_stdin_channel, NULL, NULL);
+      g_io_channel_set_flags (job->child_stdin_channel, G_IO_FLAG_NONBLOCK, NULL);
+      job->child_stdin_source = g_io_create_watch (job->child_stdin_channel, G_IO_OUT);
+      g_source_set_callback (job->child_stdin_source, (GSourceFunc) write_child_stdin, job, NULL);
+      g_source_attach (job->child_stdin_source, job->main_context);
+      g_source_unref (job->child_stdin_source);
+    }
+
+  job->child_stdout_channel = g_io_channel_unix_new (job->child_stdout_fd);
+  g_io_channel_set_flags (job->child_stdout_channel, G_IO_FLAG_NONBLOCK, NULL);
+  job->child_stdout_source = g_io_create_watch (job->child_stdout_channel, G_IO_IN);
+  g_source_set_callback (job->child_stdout_source, (GSourceFunc) read_child_stdout, job, NULL);
+  g_source_attach (job->child_stdout_source, job->main_context);
+  g_source_unref (job->child_stdout_source);
+
+  job->child_stderr_channel = g_io_channel_unix_new (job->child_stderr_fd);
+  g_io_channel_set_flags (job->child_stderr_channel, G_IO_FLAG_NONBLOCK, NULL);
+  job->child_stderr_source = g_io_create_watch (job->child_stderr_channel, G_IO_IN);
+  g_source_set_callback (job->child_stderr_source, (GSourceFunc) read_child_stderr, job, NULL);
+  g_source_attach (job->child_stderr_source, job->main_context);
+  g_source_unref (job->child_stderr_source);
+
+ out:
+  ;
+}
+
+/* manage strings with potentially unsafe content */
+
+static gpointer
+autowipe_buffer_copy (gpointer data)
+{
+  GString *orig = (GString*) data;
+  GString *copy = NULL;
+
+  if (orig != NULL)
+    {
+      copy = g_string_new_len (orig->str, orig->len);
+    }
+
+  return (gpointer) copy;
+}
+
+static void
+autowipe_buffer_free (gpointer data)
+{
+  GString *string = (GString*) data;
+  udisks_string_wipe_and_free (string);
+}

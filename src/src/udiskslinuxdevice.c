@@ -127,7 +127,7 @@ udisks_linux_device_new_sync (GUdevDevice *udev_device)
  out:
   if (error != NULL)
     {
-      udisks_error ("Error probing device: %s (%s, %d)",
+      udisks_critical ("Error probing device: %s (%s, %d)",
                     error->message, g_quark_to_string (error->domain), error->code);
       g_clear_error (&error);
     }
@@ -199,6 +199,7 @@ probe_ata (UDisksLinuxDevice  *device,
     {
       /* ATA8: 7.16 IDENTIFY DEVICE - ECh, PIO Data-In */
       input.command = 0xec;
+      input.count = 1;
       output.buffer = g_new0 (guchar, 512);
       output.buffer_size = 512;
       if (!udisks_ata_send_command_sync (fd,
@@ -221,6 +222,7 @@ probe_ata (UDisksLinuxDevice  *device,
     {
       /* ATA8: 7.17 IDENTIFY PACKET DEVICE - A1h, PIO Data-In */
       input.command = 0xa1;
+      input.count = 1;
       output.buffer = g_new0 (guchar, 512);
       output.buffer_size = 512;
       if (!udisks_ata_send_command_sync (fd,

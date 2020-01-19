@@ -34,9 +34,11 @@ typedef struct
   gboolean     supports_online_label_rename;
   gboolean     supports_owners;
   const gchar *command_create_fs;  /* should have $DEVICE and $LABEL */
+  const gchar *command_validate_create_fs;  /* should have $DEVICE and $LABEL */
 } FSInfo;
 
-const FSInfo *get_fs_info (const gchar *fstype);
+const FSInfo  *get_fs_info (const gchar *fstype);
+const gchar  **get_supported_filesystems (void);
 
 G_END_DECLS
 

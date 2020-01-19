@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -80,8 +81,6 @@ main (int argc, char *argv[])
   client = NULL;
   object = NULL;
 
-  g_type_init ();
-
   if (argc < 2 || strlen (argv[1]) == 0)
     {
       g_printerr ("%s: this program is only supposed to be invoked by umount(8).\n", argv[0]);
@@ -105,21 +104,21 @@ main (int argc, char *argv[])
   if (client == NULL)
     {
       g_printerr ("Error connecting to the udisks daemon: %s\n", error->message);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
   object = lookup_object_for_block (client, block_device);
   if (object == NULL)
     {
-      g_printerr ("Error finding object for block device %d:%d\n", major (block_device), minor (block_device));
+      g_printerr ("Error finding object for block device %u:%u\n", major (block_device), minor (block_device));
       goto out;
     }
 
   filesystem = udisks_object_peek_filesystem (object);
   if (filesystem == NULL)
     {
-      g_printerr ("Block device %d:%d is not a mountable filesystem.\n", major (block_device), minor (block_device));
+      g_printerr ("Block device %u:%u is not a mountable filesystem.\n", major (block_device), minor (block_device));
       goto out;
     }
 
@@ -130,8 +129,8 @@ main (int argc, char *argv[])
                                             NULL, /* GCancellable */
                                             &error))
     {
-      g_printerr ("Error unmounting block device %d:%d: %s\n", major (block_device), minor (block_device), error->message);
-      g_error_free (error);
+      g_printerr ("Error unmounting block device %u:%u: %s\n", major (block_device), minor (block_device), error->message);
+      g_clear_error (&error);
       goto out;
     }
 

@@ -25,6 +25,16 @@
 
 G_BEGIN_DECLS
 
+GString* udisks_string_concat (GString*, GString*);
+void udisks_string_wipe_and_free (GString*);
+
+gboolean udisks_variant_lookup_binary (GVariant     *dict,
+                                       const gchar  *name,
+                                       GString     **contents);
+
+gboolean udisks_variant_get_binary (GVariant  *variant,
+                                    GString  **contents);
+
 gchar *udisks_decode_udev_string (const gchar *str);
 
 void udisks_safe_append_to_object_path (GString      *str,
@@ -44,9 +54,9 @@ gboolean udisks_daemon_util_setup_by_user (UDisksDaemon *daemon,
                                            UDisksObject *object,
                                            uid_t         user);
 
-gboolean udisks_daemon_util_on_same_seat (UDisksDaemon          *daemon,
+gboolean udisks_daemon_util_on_user_seat (UDisksDaemon          *daemon,
                                           UDisksObject          *object,
-                                          pid_t                  process);
+                                          uid_t                  user);
 
 gboolean udisks_daemon_util_check_authorization_sync (UDisksDaemon          *daemon,
                                                       UDisksObject          *object,
@@ -54,6 +64,14 @@ gboolean udisks_daemon_util_check_authorization_sync (UDisksDaemon          *dae
                                                       GVariant              *options,
                                                       const gchar           *message,
                                                       GDBusMethodInvocation *invocation);
+
+gboolean udisks_daemon_util_check_authorization_sync_with_error (UDisksDaemon           *daemon,
+                                                                 UDisksObject           *object,
+                                                                 const gchar            *action_id,
+                                                                 GVariant               *options,
+                                                                 const gchar            *message,
+                                                                 GDBusMethodInvocation  *invocation,
+                                                                 GError                **error);
 
 gboolean udisks_daemon_util_get_caller_uid_sync (UDisksDaemon            *daemon,
                                                  GDBusMethodInvocation   *invocation,
@@ -78,22 +96,39 @@ gchar *udisks_daemon_util_escape_and_quote (const gchar *str);
 gchar *udisks_daemon_util_hexdump (gconstpointer data, gsize len);
 void udisks_daemon_util_hexdump_debug (gconstpointer data, gsize len);
 
+gchar *udisks_daemon_util_subst_str (const gchar *str, const gchar *from, const gchar *to);
+gchar *udisks_daemon_util_subst_str_and_escape (const gchar *str, const gchar *from, const gchar *to);
+
+
 gboolean udisks_daemon_util_file_set_contents (const gchar  *filename,
                                                const gchar  *contents,
                                                gssize        contents_len,
                                                gint          mode_for_new_file,
                                                GError      **error);
 
-UDisksInhibitCookie *udisks_daemon_util_inhibit_system_sync   (const gchar          *reason);
+UDisksInhibitCookie *udisks_daemon_util_inhibit_system_sync   (const gchar            *reason);
 void                 udisks_daemon_util_uninhibit_system_sync (UDisksInhibitCookie  *cookie);
-
-gboolean udisks_daemon_util_on_same_seat (UDisksDaemon          *daemon,
-                                          UDisksObject          *object,
-                                          pid_t                  process);
 
 gchar *udisks_daemon_util_get_free_mdraid_device (void);
 
 guint16 udisks_ata_identify_get_word (const guchar *identify_data, guint word_number);
+
+/* Utility macro for policy verification. */
+#define UDISKS_DAEMON_CHECK_AUTHORIZATION(daemon,                   \
+                                          object,                   \
+                                          action_id,                \
+                                          options,                  \
+                                          message,                  \
+                                          invocation)               \
+  if (! udisks_daemon_util_check_authorization_sync ((daemon),      \
+                                                     (object),      \
+                                                     (action_id),   \
+                                                     (options),     \
+                                                     (message),     \
+                                                     (invocation))) \
+    { \
+      goto out; \
+    }
 
 G_END_DECLS
 

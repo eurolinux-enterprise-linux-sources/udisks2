@@ -34,6 +34,10 @@
 #include "udiskslinuxdriveata.h"
 #include "udiskslinuxblockobject.h"
 #include "udiskslinuxdevice.h"
+#include "udisksmodulemanager.h"
+
+#include <modules/udisksmoduleifacetypes.h>
+
 
 /**
  * SECTION:udiskslinuxdriveobject
@@ -63,12 +67,21 @@ struct _UDisksLinuxDriveObject
   /* interfaces */
   UDisksDrive *iface_drive;
   UDisksDriveAta *iface_drive_ata;
+  GHashTable *module_ifaces;
 };
 
 struct _UDisksLinuxDriveObjectClass
 {
   UDisksObjectSkeletonClass parent_class;
 };
+
+typedef struct
+{
+  UDisksObject *interface;
+  UDisksObjectHasInterfaceFunc has_func;
+  UDisksObjectConnectInterfaceFunc connect_func;
+  UDisksObjectUpdateInterfaceFunc update_func;
+} ModuleInterfaceEntry;
 
 enum
 {
@@ -92,6 +105,8 @@ udisks_linux_drive_object_finalize (GObject *_object)
     g_object_unref (object->iface_drive);
   if (object->iface_drive_ata != NULL)
     g_object_unref (object->iface_drive_ata);
+  if (object->module_ifaces != NULL)
+    g_hash_table_destroy (object->module_ifaces);
 
   if (G_OBJECT_CLASS (udisks_linux_drive_object_parent_class)->finalize != NULL)
     G_OBJECT_CLASS (udisks_linux_drive_object_parent_class)->finalize (_object);
@@ -215,6 +230,15 @@ strip_and_replace_with_uscore (gchar *s)
 
  out:
   ;
+}
+
+static gboolean
+is_dm_multipath (UDisksLinuxDevice *device)
+{
+  const gchar *dm_uuid;
+
+  dm_uuid = g_udev_device_get_sysfs_attr (device->udev_device, "dm/uuid");
+  return dm_uuid != NULL && g_str_has_prefix (dm_uuid, "mpath-");
 }
 
 static void
@@ -395,17 +419,23 @@ udisks_linux_drive_object_get_devices (UDisksLinuxDriveObject *object)
  * with g_object_unref().
  */
 UDisksLinuxDevice *
-udisks_linux_drive_object_get_device (UDisksLinuxDriveObject   *object,
-                                      gboolean                  get_hw)
+udisks_linux_drive_object_get_device (UDisksLinuxDriveObject *object,
+                                      gboolean                get_hw)
 {
   UDisksLinuxDevice *ret = NULL;
-  /* TODO: actually look at @get_hw */
-  if (object->devices != NULL)
+  GList *devices;
+
+  for (devices = object->devices; devices; devices = devices->next)
     {
-      ret = object->devices->data;
-      if (ret != NULL)
-        g_object_ref (ret);
+      if (!get_hw || !is_dm_multipath (UDISKS_LINUX_DEVICE (devices->data)))
+        {
+          ret = devices->data;
+          break;
+        }
     }
+
+  if (ret != NULL)
+    g_object_ref (ret);
   return ret;
 }
 
@@ -420,15 +450,13 @@ udisks_linux_drive_object_get_device (UDisksLinuxDriveObject   *object,
  * must be freed with g_object_unref().
  */
 UDisksLinuxBlockObject *
-udisks_linux_drive_object_get_block (UDisksLinuxDriveObject   *object,
-                                     gboolean                  get_hw)
+udisks_linux_drive_object_get_block (UDisksLinuxDriveObject *object,
+                                     gboolean                get_hw)
 {
   GDBusObjectManagerServer *object_manager;
   UDisksLinuxBlockObject *ret;
   GList *objects;
   GList *l;
-
-  /* TODO: actually look at @get_hw */
 
   ret = NULL;
 
@@ -439,16 +467,17 @@ udisks_linux_drive_object_get_block (UDisksLinuxDriveObject   *object,
       GDBusObjectSkeleton *iter_object = G_DBUS_OBJECT_SKELETON (l->data);
       UDisksBlock *block;
       UDisksLinuxDevice *device;
-      gboolean is_disk;
+      gboolean skip;
 
       if (!UDISKS_IS_LINUX_BLOCK_OBJECT (iter_object))
         continue;
 
       device = udisks_linux_block_object_get_device (UDISKS_LINUX_BLOCK_OBJECT (iter_object));
-      is_disk = (g_strcmp0 (g_udev_device_get_devtype (device->udev_device), "disk") == 0);
+      skip = (g_strcmp0 (g_udev_device_get_devtype (device->udev_device), "disk") != 0
+              || (get_hw && is_dm_multipath (device)));
       g_object_unref (device);
 
-      if (!is_disk)
+      if (skip)
         continue;
 
       block = udisks_object_peek_block (UDISKS_OBJECT (iter_object));
@@ -468,25 +497,21 @@ udisks_linux_drive_object_get_block (UDisksLinuxDriveObject   *object,
 
 /* ---------------------------------------------------------------------------------------------------- */
 
-typedef gboolean (*HasInterfaceFunc)    (UDisksLinuxDriveObject     *object);
-typedef void     (*ConnectInterfaceFunc) (UDisksLinuxDriveObject    *object);
-typedef gboolean (*UpdateInterfaceFunc) (UDisksLinuxDriveObject     *object,
-                                         const gchar    *uevent_action,
-                                         GDBusInterface *interface);
-
 static gboolean
-update_iface (UDisksLinuxDriveObject   *object,
-              const gchar              *uevent_action,
-              HasInterfaceFunc          has_func,
-              ConnectInterfaceFunc      connect_func,
-              UpdateInterfaceFunc       update_func,
-              GType                     skeleton_type,
-              gpointer                  _interface_pointer)
+update_iface (UDisksObject                     *object,
+              const gchar                      *uevent_action,
+              UDisksObjectHasInterfaceFunc      has_func,
+              UDisksObjectConnectInterfaceFunc  connect_func,
+              UDisksObjectUpdateInterfaceFunc   update_func,
+              GType                             skeleton_type,
+              gpointer                          _interface_pointer)
 {
   gboolean ret = FALSE;
   gboolean has;
   gboolean add;
   GDBusInterface **interface_pointer = _interface_pointer;
+  GDBusInterfaceInfo *interface_info = NULL;
+  GDBusInterface *tmp_iface = NULL;
 
   g_return_val_if_fail (object != NULL, FALSE);
   g_return_val_if_fail (has_func != NULL, FALSE);
@@ -512,8 +537,19 @@ update_iface (UDisksLinuxDriveObject   *object,
     {
       if (!has)
         {
-          g_dbus_object_skeleton_remove_interface (G_DBUS_OBJECT_SKELETON (object),
-                                                   G_DBUS_INTERFACE_SKELETON (*interface_pointer));
+          /* Check before we remove interface from object  */
+          interface_info = g_dbus_interface_get_info (*interface_pointer);
+          tmp_iface = g_dbus_object_get_interface ((GDBusObject *) object,
+                                                   interface_info->name);
+
+          if (tmp_iface)
+            {
+              g_dbus_object_skeleton_remove_interface
+                (G_DBUS_OBJECT_SKELETON (object),
+                 G_DBUS_INTERFACE_SKELETON (*interface_pointer));
+              g_object_unref(tmp_iface);
+            }
+
           g_object_unref (*interface_pointer);
           *interface_pointer = NULL;
         }
@@ -534,37 +570,40 @@ update_iface (UDisksLinuxDriveObject   *object,
 /* ---------------------------------------------------------------------------------------------------- */
 
 static gboolean
-drive_check (UDisksLinuxDriveObject *object)
+drive_check (UDisksObject *object)
 {
   return TRUE;
 }
 
 static void
-drive_connect (UDisksLinuxDriveObject *object)
+drive_connect (UDisksObject *object)
 {
 }
 
 static gboolean
-drive_update (UDisksLinuxDriveObject  *object,
-              const gchar             *uevent_action,
-              GDBusInterface          *_iface)
+drive_update (UDisksObject   *object,
+              const gchar    *uevent_action,
+              GDBusInterface *_iface)
 {
-  return udisks_linux_drive_update (UDISKS_LINUX_DRIVE (object->iface_drive), object);
+  UDisksLinuxDriveObject *drive_object = UDISKS_LINUX_DRIVE_OBJECT (object);
+
+  return udisks_linux_drive_update (UDISKS_LINUX_DRIVE (drive_object->iface_drive), drive_object);
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
 
 static gboolean
-drive_ata_check (UDisksLinuxDriveObject *object)
+drive_ata_check (UDisksObject *object)
 {
+  UDisksLinuxDriveObject *drive_object = UDISKS_LINUX_DRIVE_OBJECT (object);
   gboolean ret;
   UDisksLinuxDevice *device;
 
   ret = FALSE;
-  if (object->devices == NULL)
+  if (drive_object->devices == NULL)
     goto out;
 
-  device = object->devices->data;
+  device = drive_object->devices->data;
   if (device->ata_identify_device_data != NULL || device->ata_identify_packet_device_data != NULL)
     ret = TRUE;
 
@@ -573,17 +612,19 @@ drive_ata_check (UDisksLinuxDriveObject *object)
 }
 
 static void
-drive_ata_connect (UDisksLinuxDriveObject *object)
+drive_ata_connect (UDisksObject *object)
 {
 
 }
 
 static gboolean
-drive_ata_update (UDisksLinuxDriveObject  *object,
-                  const gchar             *uevent_action,
-                  GDBusInterface          *_iface)
+drive_ata_update (UDisksObject   *object,
+                  const gchar    *uevent_action,
+                  GDBusInterface *_iface)
 {
-  return udisks_linux_drive_ata_update (UDISKS_LINUX_DRIVE_ATA (object->iface_drive_ata), object);
+  UDisksLinuxDriveObject *drive_object = UDISKS_LINUX_DRIVE_OBJECT (object);
+
+  return udisks_linux_drive_ata_update (UDISKS_LINUX_DRIVE_ATA (drive_object->iface_drive_ata), drive_object);
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -610,6 +651,40 @@ find_link_for_sysfs_path (UDisksLinuxDriveObject *object,
   return ret;
 }
 
+static void
+free_module_interface_entry (ModuleInterfaceEntry *entry)
+{
+  if (entry->interface != NULL)
+    g_object_unref (entry->interface);
+  g_free (entry);
+}
+
+static void
+ensure_module_ifaces (UDisksLinuxDriveObject *object,
+                      UDisksModuleManager    *module_manager)
+{
+  GList *l;
+  ModuleInterfaceEntry *entry;
+  UDisksModuleInterfaceInfo *ii;
+
+  /* Assume all modules are either unloaded or loaded at the same time, so don't regenerate entries */
+  if (object->module_ifaces == NULL)
+    {
+      object->module_ifaces = g_hash_table_new_full (g_direct_hash, g_direct_equal, NULL, (GDestroyNotify) free_module_interface_entry);
+
+      l = udisks_module_manager_get_drive_object_iface_infos (module_manager);
+      for (; l; l = l->next)
+        {
+          ii = l->data;
+          entry = g_new0 (ModuleInterfaceEntry, 1);
+          entry->has_func = ii->has_func;
+          entry->connect_func = ii->connect_func;
+          entry->update_func = ii->update_func;
+          g_hash_table_replace (object->module_ifaces, GSIZE_TO_POINTER (ii->skeleton_type), entry);
+        }
+    }
+}
+
 /**
  * udisks_linux_drive_object_uevent:
  * @object: A #UDisksLinuxDriveObject.
@@ -625,6 +700,10 @@ udisks_linux_drive_object_uevent (UDisksLinuxDriveObject *object,
 {
   GList *link;
   gboolean conf_changed;
+  UDisksModuleManager *module_manager;
+  GHashTableIter iter;
+  gpointer key;
+  ModuleInterfaceEntry *entry;
 
   g_return_if_fail (UDISKS_IS_LINUX_DRIVE_OBJECT (object));
   g_return_if_fail (device == NULL || UDISKS_IS_LINUX_DEVICE (device));
@@ -642,7 +721,7 @@ udisks_linux_drive_object_uevent (UDisksLinuxDriveObject *object,
       else
         {
           udisks_warning ("Drive doesn't have device with sysfs path %s on remove event",
-                          g_udev_device_get_sysfs_path (device->udev_device));
+                          device ? g_udev_device_get_sysfs_path (device->udev_device) : "(null device)");
         }
     }
   else
@@ -660,10 +739,26 @@ udisks_linux_drive_object_uevent (UDisksLinuxDriveObject *object,
     }
 
   conf_changed = FALSE;
-  conf_changed |= update_iface (object, action, drive_check, drive_connect, drive_update,
+  conf_changed |= update_iface (UDISKS_OBJECT (object), action, drive_check, drive_connect, drive_update,
                                 UDISKS_TYPE_LINUX_DRIVE, &object->iface_drive);
-  conf_changed |= update_iface (object, action, drive_ata_check, drive_ata_connect, drive_ata_update,
+  conf_changed |= update_iface (UDISKS_OBJECT (object), action, drive_ata_check, drive_ata_connect, drive_ata_update,
                                 UDISKS_TYPE_LINUX_DRIVE_ATA, &object->iface_drive_ata);
+
+  /* Attach interfaces from modules */
+  module_manager = udisks_daemon_get_module_manager (object->daemon);
+  if (udisks_module_manager_get_modules_available (module_manager))
+    {
+      ensure_module_ifaces (object, module_manager);
+      g_hash_table_iter_init (&iter, object->module_ifaces);
+      while (g_hash_table_iter_next (&iter, &key, (gpointer *) &entry))
+        {
+          conf_changed |= update_iface (UDISKS_OBJECT (object), action, entry->has_func, entry->connect_func, entry->update_func,
+                                        (GType) key, &entry->interface);
+        }
+    }
+
+  if (g_strcmp0 (action, "reconfigure") == 0)
+    conf_changed = TRUE;
 
   if (conf_changed)
     apply_configuration (object);
@@ -732,13 +827,15 @@ check_for_vpd (GUdevDevice *device)
   const gchar *serial;
   const gchar *wwn;
   const gchar *path;
+  const gchar *model;
 
   g_return_val_if_fail (G_UDEV_IS_DEVICE (device), FALSE);
 
-  /* order of preference: WWN_serial, WWN, serial, path */
+  /* order of preference: WWN_serial, WWN, Model_serial, serial, path */
   serial = g_udev_device_get_property (device, "ID_SERIAL");
   wwn = g_udev_device_get_property (device, "ID_WWN_WITH_EXTENSION");
   path = g_udev_device_get_property (device, "ID_PATH");
+  model = g_udev_device_get_property (device, "ID_MODEL");
   if (wwn != NULL && strlen (wwn) > 0 && !is_wwn_black_listed (wwn))
     {
       if (serial != NULL && strlen (serial) > 0)
@@ -748,7 +845,10 @@ check_for_vpd (GUdevDevice *device)
     }
   else if (serial != NULL && strlen (serial) > 0)
     {
-      ret = g_strdup (serial);
+      if (model != NULL && strlen (model) > 0)
+        ret = g_strdup_printf ("%s_%s", model, serial);
+      else
+        ret = g_strdup (serial);
     }
   else if (path != NULL && strlen (path) > 0)
     {
@@ -768,9 +868,9 @@ check_for_vpd (GUdevDevice *device)
  * Returns: %TRUE if we should construct an object, %FALSE otherwise.
  */
 gboolean
-udisks_linux_drive_object_should_include_device (GUdevClient  *client,
+udisks_linux_drive_object_should_include_device (GUdevClient        *client,
                                                  UDisksLinuxDevice  *device,
-                                                 gchar       **out_vpd)
+                                                 gchar             **out_vpd)
 {
   gboolean ret;
   gchar *vpd;
@@ -796,7 +896,6 @@ udisks_linux_drive_object_should_include_device (GUdevClient  *client,
       const gchar *name;
       const gchar *vendor;
       const gchar *model;
-      const gchar *dm_name;
       GUdevDevice *parent;
 
       name = g_udev_device_get_name (device->udev_device);
@@ -836,8 +935,7 @@ udisks_linux_drive_object_should_include_device (GUdevClient  *client,
         }
 
       /* dm-multipath */
-      dm_name = g_udev_device_get_sysfs_attr (device->udev_device, "dm/name");
-      if (dm_name != NULL && g_str_has_prefix (dm_name, "mpath"))
+      if (is_dm_multipath (device))
         {
           gchar **slaves;
           guint n;
@@ -936,7 +1034,7 @@ udisks_linux_drive_object_housekeeping (UDisksLinuxDriveObject  *object,
             {
               udisks_info ("Drive %s is in a sleep state",
                            g_dbus_object_get_object_path (G_DBUS_OBJECT (object)));
-              g_error_free (local_error);
+              g_clear_error (&local_error);
             }
           else if (nowakeup && (local_error->domain == UDISKS_ERROR &&
                                 local_error->code == UDISKS_ERROR_DEVICE_BUSY))
@@ -944,7 +1042,7 @@ udisks_linux_drive_object_housekeeping (UDisksLinuxDriveObject  *object,
               /* typically because a "secure erase" operation is pending */
               udisks_info ("Drive %s is busy",
                            g_dbus_object_get_object_path (G_DBUS_OBJECT (object)));
-              g_error_free (local_error);
+              g_clear_error (&local_error);
             }
           else
             {
@@ -995,9 +1093,9 @@ is_block_unlocked (GList *objects, const gchar *crypto_object_path)
  * Returns: %TRUE if @object is not is use, %FALSE if @error is set.
  */
 gboolean
-udisks_linux_drive_object_is_not_in_use (UDisksLinuxDriveObject   *object,
-                                         GCancellable             *cancellable,
-                                         GError                  **error)
+udisks_linux_drive_object_is_not_in_use (UDisksLinuxDriveObject  *object,
+                                         GCancellable            *cancellable,
+                                         GError                 **error)
 {
   GDBusObjectManagerServer *object_manager;
   const gchar *drive_object_path;
@@ -1116,4 +1214,3 @@ udisks_linux_drive_object_get_siblings (UDisksLinuxDriveObject *object)
   g_free (sibling_id);
   return ret;
 }
-

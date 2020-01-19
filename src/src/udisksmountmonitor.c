@@ -28,6 +28,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <mntent.h>
 
 #include <glib.h>
@@ -37,6 +38,11 @@
 #include "udisksmountmonitor.h"
 #include "udisksmount.h"
 #include "udisksprivate.h"
+
+/* build a %Ns format string macro with N == PATH_MAX */
+#define xstr(s) str(s)
+#define str(s) #s
+#define PATH_MAX_FMT "%" xstr(PATH_MAX) "s"
 
 /**
  * SECTION:udisksmountmonitor
@@ -308,7 +314,7 @@ udisks_mount_monitor_constructed (GObject *object)
   else
     {
       g_error ("No /proc/self/mountinfo file: %s", error->message);
-      g_error_free (error);
+      g_clear_error (&error);
     }
 
   error = NULL;
@@ -327,7 +333,7 @@ udisks_mount_monitor_constructed (GObject *object)
           udisks_warning ("Error opening /proc/swaps file: %s (%s, %d)",
                           error->message, g_quark_to_string (error->domain), error->code);
         }
-      g_error_free (error);
+      g_clear_error (&error);
     }
 
   if (G_OBJECT_CLASS (udisks_mount_monitor_parent_class)->constructed != NULL)
@@ -416,8 +422,8 @@ udisks_mount_monitor_get_mountinfo (UDisksMountMonitor  *monitor,
       guint mount_id;
       guint parent_id;
       guint major, minor;
-      gchar encoded_root[PATH_MAX];
-      gchar encoded_mount_point[PATH_MAX];
+      gchar encoded_root[PATH_MAX + 1];
+      gchar encoded_mount_point[PATH_MAX + 1];
       gchar *mount_point;
       dev_t dev;
 
@@ -425,7 +431,7 @@ udisks_mount_monitor_get_mountinfo (UDisksMountMonitor  *monitor,
         continue;
 
       if (sscanf (lines[n],
-                  "%d %d %d:%d %s %s",
+                  "%u %u %u:%u " PATH_MAX_FMT " " PATH_MAX_FMT,
                   &mount_id,
                   &parent_id,
                   &major,
@@ -436,6 +442,8 @@ udisks_mount_monitor_get_mountinfo (UDisksMountMonitor  *monitor,
           udisks_warning ("Error parsing line '%s'", lines[n]);
           continue;
         }
+      encoded_root[sizeof encoded_root - 1] = '\0';
+      encoded_mount_point[sizeof encoded_mount_point - 1] = '\0';
 
       /* Temporary work-around for btrfs, see
        *
@@ -450,15 +458,17 @@ udisks_mount_monitor_get_mountinfo (UDisksMountMonitor  *monitor,
           sep = strstr (lines[n], " - ");
           if (sep != NULL)
             {
-              gchar fstype[PATH_MAX];
-              gchar mount_source[PATH_MAX];
+              gchar fstype[PATH_MAX + 1];
+              gchar mount_source[PATH_MAX + 1];
               struct stat statbuf;
 
-              if (sscanf (sep + 3, "%s %s", fstype, mount_source) != 2)
+              if (sscanf (sep + 3, PATH_MAX_FMT " " PATH_MAX_FMT, fstype, mount_source) != 2)
                 {
                   udisks_warning ("Error parsing things past - for '%s'", lines[n]);
                   continue;
                 }
+              fstype[sizeof fstype - 1] = '\0';
+              mount_source[sizeof mount_source - 1] = '\0';
 
               if (g_strcmp0 (fstype, "btrfs") != 0)
                 continue;
@@ -546,7 +556,7 @@ udisks_mount_monitor_get_swaps (UDisksMountMonitor  *monitor,
   lines = g_strsplit (contents, "\n", 0);
   for (n = 0; lines[n] != NULL; n++)
     {
-      gchar filename[PATH_MAX];
+      gchar filename[PATH_MAX + 1];
       struct stat statbuf;
       dev_t dev;
 
@@ -557,11 +567,12 @@ udisks_mount_monitor_get_swaps (UDisksMountMonitor  *monitor,
       if (strlen (lines[n]) == 0)
         continue;
 
-      if (sscanf (lines[n], "%s", filename) != 1)
+      if (sscanf (lines[n], PATH_MAX_FMT, filename) != 1)
         {
           udisks_warning ("Error parsing line '%s'", lines[n]);
           continue;
         }
+      filename[sizeof filename - 1] = '\0';
 
       if (stat (filename, &statbuf) != 0)
         {
@@ -603,7 +614,7 @@ udisks_mount_monitor_ensure (UDisksMountMonitor *monitor)
     {
       udisks_warning ("Error getting mounts: %s (%s, %d)",
                       error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
+      g_clear_error (&error);
     }
 
   error = NULL;
@@ -611,7 +622,7 @@ udisks_mount_monitor_ensure (UDisksMountMonitor *monitor)
     {
       udisks_warning ("Error getting swaps: %s (%s, %d)",
                       error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
+      g_clear_error (&error);
     }
 
   monitor->have_data = TRUE;

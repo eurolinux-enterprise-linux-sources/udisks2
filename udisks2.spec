@@ -1,212 +1,289 @@
-%define glib2_version                   2.31.13
-%define gobject_introspection_version   1.30.0
-%define polkit_version                  0.101
-%define systemd_version                 184
-%define libatasmart_version             0.12
-%define dbus_version                    1.4.0
+%global glib2_version                   2.36
+%global gobject_introspection_version   1.30.0
+%global polkit_version                  0.102
+%global systemd_version                 208
+%global libatasmart_version             0.17
+%global dbus_version                    1.4.0
+%global with_gtk_doc                    1
+%global libblockdev_version             2.10
 
+%define is_git                          %(git show > /dev/null 2>&1 && echo 1 || echo 0)
+%define git_hash                        %(git log -1 --pretty=format:"%h" || true)
+%define build_date                      %(date '+%Y%m%d')
+
+Name:    udisks2
 Summary: Disk Manager
-Name: udisks2
-Version: 2.1.2
+Version: 2.7.3
 Release: 6%{?dist}
 License: GPLv2+
-Group: System Environment/Libraries
-URL: http://www.freedesktop.org/wiki/Software/udisks
-Source0: http://udisks.freedesktop.org/releases/udisks-%{version}.tar.bz2
+Group:   System Environment/Libraries
+URL:     https://github.com/storaged-project/udisks
+Source0: https://github.com/storaged-project/udisks/releases/download/udisks-%{version}/udisks-%{version}.tar.bz2
+
+Patch0:  reboot_mpoint_cleanup_1384796.patch
+Patch1:  raid_watchers_1400056.patch
+Patch2:  no_discard_1516697.patch
+Patch3:  fix_thinpool_size_1534904.patch
+Patch4:  fix_mpoin_cleanup_1384796.patch
 
 BuildRequires: glib2-devel >= %{glib2_version}
 BuildRequires: gobject-introspection-devel >= %{gobject_introspection_version}
-BuildRequires: polkit-devel >= %{polkit_version}
-BuildRequires: intltool
-BuildRequires: libatasmart-devel >= %{libatasmart_version}
 BuildRequires: libgudev1-devel >= %{systemd_version}
-BuildRequires: gtk-doc
-BuildRequires: systemd-devel
+BuildRequires: libatasmart-devel >= %{libatasmart_version}
+BuildRequires: polkit-devel >= %{polkit_version}
+BuildRequires: systemd-devel >= %{systemd_version}
+BuildRequires: gnome-common
 BuildRequires: libacl-devel
+BuildRequires: chrpath
+BuildRequires: gtk-doc
+BuildRequires: intltool
+BuildRequires: redhat-rpm-config
+BuildRequires: libblockdev-devel        >= %{libblockdev_version}
+BuildRequires: libblockdev-part-devel   >= %{libblockdev_version}
+BuildRequires: libblockdev-loop-devel   >= %{libblockdev_version}
+BuildRequires: libblockdev-swap-devel   >= %{libblockdev_version}
+BuildRequires: libblockdev-mdraid-devel >= %{libblockdev_version}
+BuildRequires: libblockdev-fs-devel     >= %{libblockdev_version}
+BuildRequires: libblockdev-crypto-devel >= %{libblockdev_version}
 
-# needed to pull in the system bus daemon
+Requires: libblockdev        >= %{libblockdev_version}
+Requires: libblockdev-part   >= %{libblockdev_version}
+Requires: libblockdev-loop   >= %{libblockdev_version}
+Requires: libblockdev-swap   >= %{libblockdev_version}
+Requires: libblockdev-mdraid >= %{libblockdev_version}
+Requires: libblockdev-fs     >= %{libblockdev_version}
+Requires: libblockdev-crypto >= %{libblockdev_version}
+
+# Needed for the systemd-related macros used in this file
+%{?systemd_requires}
+BuildRequires: systemd
+
+# Needed to pull in the system bus daemon
 Requires: dbus >= %{dbus_version}
-# needed to pull in the udev daemon
-Requires: systemd >= %{systemd_version}
-# we need at least this version for bugfixes / features etc.
+# Needed to pull in the udev daemon
+Requires: udev >= %{systemd_version}
+# We need at least this version for bugfixes/features etc.
 Requires: libatasmart >= %{libatasmart_version}
-# for mount, umount, mkswap
+# For mount, umount, mkswap
 Requires: util-linux
-# for mkfs.ext3, mkfs.ext3, e2label
+# For mkfs.ext3, mkfs.ext3, e2label
 Requires: e2fsprogs
-# for mkfs.xfs, xfs_admin
+# For mkfs.xfs, xfs_admin
 Requires: xfsprogs
-# for mkfs.vfat
+# For mkfs.vfat
 Requires: dosfstools
-# for partitioning
-Requires: parted
 Requires: gdisk
-# for LUKS devices
-Requires: cryptsetup-luks
-# for ejecting removable disks
+# For ejecting removable disks
 Requires: eject
 
-# for MD-RAID
-Requires: mdadm
+Requires: lib%{name}%{?_isa} = %{version}-%{release}
 
-Requires: libudisks2 = %{version}-%{release}
-
-# for mkntfs (not available on rhel or on ppc/ppc64)
+# For mkntfs (not available on rhel or on ppc/ppc64)
 %if ! 0%{?rhel}
 %ifnarch ppc ppc64
 Requires: ntfsprogs
 %endif
 %endif
 
-# for /proc/self/mountinfo, only available in 2.6.26 or higher
-Conflicts: kernel < 2.6.26
-
-# https://bugzilla.redhat.com/show_bug.cgi?id=976796
-# ensure smooth upgrade path from udisks(1)
-Obsoletes: udisks
-
-# Some patch touches Makefile.am
-BuildRequires: automake autoconf
-BuildRequires: gnome-common
-
-
-# add a man page for umount.udisks2
-# https://bugzilla.redhat.com/show_bug.cgi?id=948926
-Patch8: umount.udisks2-manpage.patch
-
-# udisks2: udiskctl loop-delete crash
-# https://bugzilla.redhat.com/show_bug.cgi?id=1036076
-Patch9: udisks-2.1.3-udisksctl-loop-delete-crash.patch
-
-# udisks2: thread safety issues
-# https://bugzilla.redhat.com/show_bug.cgi?id=1036099
-Patch10: udisks-2.1.3-getpwuid-thread-safety.patch
-Patch11: udisks-2.1.3-udisks_daemon_util_get_caller_uid_sync-missing-goto.patch
-
-# udisks2 doesn't unmount /dev/sr0 when optical media is ejected using optical drive button
-# https://bugzilla.redhat.com/show_bug.cgi?id=835120
-Patch12: udisks-2.x.x-cleanup-cdrom.patch
-
-# Issues found by clang static analyzer
-# https://bugzilla.redhat.com/show_bug.cgi?id=1056580
-Patch13: udisks-2.1.3-uninitialized-vars.patch
-Patch14: udisks-2.1.3-uninitialized-wait_data.patch
-
-# CVE-2014-0004
-# https://bugzilla.redhat.com/show_bug.cgi?id=1070144
-Patch15: udisks-2.x.x-CVE-2014-0004.patch
-
-# Rename the Intel SW RAID
-# https://bugzilla.redhat.com/show_bug.cgi?id=1175225
-Patch16: udisks-2.1.2-intel_raid.patch
+Obsoletes: storaged
 
 %description
-udisks provides a daemon, D-Bus API and command line tools for
-managing disks and storage devices. This package is for the udisks 2.x
-series.
+The Udisks project provides a daemon, tools and libraries to access and
+manipulate disks, storage devices and technologies.
 
-%package -n libudisks2
-Summary: Dynamic library to access the udisks daemon
+%package -n lib%{name}
+Summary: Dynamic library to access the udisksd daemon
 Group: System Environment/Libraries
 License: LGPLv2+
+Obsoletes: libstoraged
 
-%description -n libudisks2
-This package contains the dynamic library libudisks2, which provides
-access to the udisks daemon. This package is for the udisks 2.x
-series.
+%description -n lib%{name}
+This package contains the dynamic library, which provides
+access to the udisksd daemon.
 
-%package -n libudisks2-devel
-Summary: Development files for libudisks2
-Group: Development/Libraries
-Requires: libudisks2 = %{version}-%{release}
-Requires: pkgconfig
+%package -n %{name}-iscsi
+Summary: Module for iSCSI
+Group: System Environment/Libraries
+Requires: %{name}%{?_isa} = %{version}-%{release}
 License: LGPLv2+
+Requires: iscsi-initiator-utils
+BuildRequires: iscsi-initiator-utils-devel
+Obsoletes: storaged-iscsi
 
-%description -n libudisks2-devel
-This package contains the development files for the library
-libudisks2, a dynamic library, which provides access to the udisks
-daemon. This package is for the udisks 2.x series.
+%description -n %{name}-iscsi
+This package contains module for iSCSI configuration.
+
+%package -n %{name}-lvm2
+Summary: Module for LVM2
+Group: System Environment/Libraries
+Requires: %{name}%{?_isa} = %{version}-%{release}
+License: LGPLv2+
+Requires: lvm2
+Requires: libblockdev-lvm >= %{libblockdev_version}
+BuildRequires: lvm2-devel
+BuildRequires: libblockdev-lvm-devel >= %{libblockdev_version}
+Obsoletes: storaged-lvm2
+
+%description -n %{name}-lvm2
+This package contains module for LVM2 configuration.
+
+%package -n lib%{name}-devel
+Summary: Development files for lib%{name}
+Group: Development/Libraries
+Requires: lib%{name}%{?_isa} = %{version}-%{release}
+License: LGPLv2+
+Obsoletes: libstoraged-devel
+
+%description -n lib%{name}-devel
+This package contains the development files for the library lib%{name}, a
+dynamic library, which provides access to the udisksd daemon.
 
 %prep
 %setup -q -n udisks-%{version}
-%patch8 -p1 -b .umount.udisks2-manpage
-%patch9 -p1 -b .udisksctl-loop-delete-crash
-%patch10 -p1 -b .getpwuid-thread-safety
-%patch11 -p1 -b .udisks_daemon_util_get_caller_uid_sync-missing-goto
-%patch12 -p1 -b .cleanup-cdrom
-%patch13 -p1 -b .uninitialized-vars
-%patch14 -p1 -b .uninitialized-wait_data
-%patch15 -p1 -b .cve-2014-0004
-%patch16 -p1 -b .intel_raid
+%patch0 -p1
+%patch1 -p1
+%patch2 -p1
+%patch3 -p1
+%patch4 -p1
 
 %build
-# umount.udisks2-manpage.patch touches Makefile.am
-libtoolize --force  || :
-aclocal  || :
-autoheader  || :
-automake  || :
-autoconf  || :
+autoreconf -ivf
 # we can't use _hardened_build here, see
 # https://bugzilla.redhat.com/show_bug.cgi?id=892837
 export CFLAGS='-fPIC %optflags'
 export LDFLAGS='-pie -Wl,-z,now -Wl,-z,relro'
-%configure --enable-gtk-doc
-make
+%configure            \
+    --sysconfdir=/etc \
+    --enable-iscsi    \
+    --enable-lvm2     \
+%if %{with_gtk_doc}
+    --enable-gtk-doc
+%else
+    --disable-gtk-doc
+%endif
+make %{?_smp_mflags}
 
 %install
-make install DESTDIR=$RPM_BUILD_ROOT
+make install DESTDIR=%{buildroot}
+%if %{with_gtk_doc} == 0
+rm -fr %{buildroot}/%{_datadir}/gtk-doc/html/udisks2
+%endif
 
-rm -f $RPM_BUILD_ROOT%{_libdir}/*.la
-rm -f $RPM_BUILD_ROOT%{_libdir}/*.a
+find %{buildroot} -name \*.la -o -name \*.a | xargs rm
 
-%find_lang %{name}
+chrpath --delete %{buildroot}/%{_sbindir}/umount.udisks2
+chrpath --delete %{buildroot}/%{_bindir}/udisksctl
+chrpath --delete %{buildroot}/%{_libexecdir}/udisks2/udisksd
 
-%post -n libudisks2 -p /sbin/ldconfig
+%find_lang udisks2
 
-%postun -n libudisks2 -p /sbin/ldconfig
+%post -n %{name}
+%systemd_post udisks2.service
+%systemd_post clean-mount-point@.service
+udevadm control --reload
+udevadm trigger
 
-%files -f %{name}.lang
-%doc README AUTHORS NEWS COPYING HACKING
+%preun -n %{name}
+%systemd_preun udisks2.service
+%systemd_preun clean-mount-point@.service
+
+%postun -n %{name}
+%systemd_postun_with_restart udisks2.service
+%systemd_postun_with_restart clean-mount-point@.service
+
+%post -n lib%{name} -p /sbin/ldconfig
+
+%postun -n lib%{name} -p /sbin/ldconfig
+
+%files -f udisks2.lang
+%doc README.md AUTHORS NEWS HACKING
+%license COPYING
 
 %dir %{_sysconfdir}/udisks2
+%{_sysconfdir}/udisks2/udisks2.conf
 
 %{_sysconfdir}/dbus-1/system.d/org.freedesktop.UDisks2.conf
 %{_datadir}/bash-completion/completions/udisksctl
-%{_prefix}/lib/systemd/system/udisks2.service
-%{_prefix}/lib/udev/rules.d/80-udisks2.rules
+%{_unitdir}/udisks2.service
+%{_unitdir}/clean-mount-point@.service
+%{_udevrulesdir}/80-udisks2.rules
 %{_sbindir}/umount.udisks2
 
-%dir %{_prefix}/lib/udisks2
-%{_prefix}/lib/udisks2/udisksd
+
+%dir %{_libdir}/udisks2
+%dir %{_libdir}/udisks2/modules
+%dir %{_libexecdir}/udisks2
+%{_libexecdir}/udisks2/udisksd
 
 %{_bindir}/udisksctl
 
-%{_mandir}/man1/*
-%{_mandir}/man8/*
+%{_mandir}/man1/udisksctl.1*
+%{_mandir}/man5/udisks2.conf.5*
+%{_mandir}/man8/udisksd.8*
+%{_mandir}/man8/udisks.8*
+%{_mandir}/man8/umount.udisks2.8*
 
-%{_datadir}/polkit-1/actions/org.freedesktop.udisks2.policy
+%{_datadir}/polkit-1/actions/org.freedesktop.UDisks2.policy
 %{_datadir}/dbus-1/system-services/org.freedesktop.UDisks2.service
 
 # Permissions for local state data are 0700 to avoid leaking information
 # about e.g. mounts to unprivileged users
 %attr(0700,root,root) %dir %{_localstatedir}/lib/udisks2
 
-%files -n libudisks2
+%files -n lib%{name}
 %{_libdir}/libudisks2.so.*
 %{_libdir}/girepository-1.0/UDisks-2.0.typelib
 
-%files -n libudisks2-devel
+%files -n %{name}-lvm2
+%{_libdir}/udisks2/modules/libudisks2_lvm2.so
+%{_datadir}/polkit-1/actions/org.freedesktop.UDisks2.lvm2.policy
+
+%files -n %{name}-iscsi
+%{_libdir}/udisks2/modules/libudisks2_iscsi.so
+%{_datadir}/polkit-1/actions/org.freedesktop.UDisks2.iscsi.policy
+
+%files -n lib%{name}-devel
 %{_libdir}/libudisks2.so
 %dir %{_includedir}/udisks2
 %dir %{_includedir}/udisks2/udisks
 %{_includedir}/udisks2/udisks/*.h
 %{_datadir}/gir-1.0/UDisks-2.0.gir
+%if %{with_gtk_doc}
 %dir %{_datadir}/gtk-doc/html/udisks2
 %{_datadir}/gtk-doc/html/udisks2/*
+%endif
 %{_libdir}/pkgconfig/udisks2.pc
 
 # Note: please don't forget the %{?dist} in the changelog. Thanks
 %changelog
+* Tue Feb 06 2018 Vojtech Trefny <vtrefny@redhat.com> - 2.7.3-6
+- Fix escaping mountpoint for the cleanup service
+  Related: rhbz#1384796
+
+* Mon Feb 05 2018 Vojtech Trefny <vtrefny@redhat.com> - 2.7.3-5
+- lvm2: Don't match prefixes in cmp_int_lv_name
+  Resolves: rhbz#1534904
+
+* Thu Nov 30 2017 Vratislav Podzimek <vpodzime@redhat.com> - 2.7.3-4
+- Add 'no-discard' option to formatting methods (mvollmer)
+  Resolves: rhbz#1516697
+
+* Mon Oct 23 2017 Vratislav Podzimek <vpodzime@redhat.com> - 2.7.3-3
+- Add and use a service for cleaning up mount point directories
+  Resolves: rhbz#1384796
+- Do not try to create file watchers for RAIDs without redundancy
+  Resolves: rhbz#1400056
+
+* Thu Oct 19 2017 Vratislav Podzimek <vpodzime@redhat.com> - 2.7.3-2
+- Put back the hack to ensure hardening
+  Related: rhbz#1477736
+- Fix the relationship between new udisks2 and storaged
+  Related: rhbz#1477736
+
+* Thu Oct 12 2017 Vratislav Podzimek <vpodzime@redhat.com> - 2.7.3-1
+- Rebase to upstream version 2.7.3
+  Resolves: rhbz#1477736
+
 * Wed May 13 2015 Tomas Smetana <tsmetana@redhat.com> - 2.1.2-6
 - Rename the Intel SW RAID (#1175225)
 - Resolves: rhbz#1175225

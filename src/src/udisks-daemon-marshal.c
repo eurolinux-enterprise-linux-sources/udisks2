@@ -1,7 +1,5 @@
 #include "udisks-daemon-marshal.h"
-
-#include	<glib-object.h>
-
+#include <glib-object.h>
 
 #ifdef G_ENABLE_DEBUG
 #define g_marshal_value_peek_boolean(v)  g_value_get_boolean (v)
@@ -49,25 +47,24 @@
 #define g_marshal_value_peek_variant(v)  (v)->data[0].v_pointer
 #endif /* !G_ENABLE_DEBUG */
 
-
 /* BOOLEAN:BOXED,INT,BOXED,BOXED (udisks-daemon-marshal.list:1) */
 void
 udisks_daemon_marshal_BOOLEAN__BOXED_INT_BOXED_BOXED (GClosure     *closure,
-                                                      GValue       *return_value G_GNUC_UNUSED,
+                                                      GValue       *return_value,
                                                       guint         n_param_values,
                                                       const GValue *param_values,
                                                       gpointer      invocation_hint G_GNUC_UNUSED,
                                                       gpointer      marshal_data)
 {
-  typedef gboolean (*GMarshalFunc_BOOLEAN__BOXED_INT_BOXED_BOXED) (gpointer     data1,
-                                                                   gpointer     arg_1,
-                                                                   gint         arg_2,
-                                                                   gpointer     arg_3,
-                                                                   gpointer     arg_4,
-                                                                   gpointer     data2);
-  register GMarshalFunc_BOOLEAN__BOXED_INT_BOXED_BOXED callback;
-  register GCClosure *cc = (GCClosure*) closure;
-  register gpointer data1, data2;
+  typedef gboolean (*GMarshalFunc_BOOLEAN__BOXED_INT_BOXED_BOXED) (gpointer data1,
+                                                                   gpointer arg1,
+                                                                   gint arg2,
+                                                                   gpointer arg3,
+                                                                   gpointer arg4,
+                                                                   gpointer data2);
+  GCClosure *cc = (GCClosure *) closure;
+  gpointer data1, data2;
+  GMarshalFunc_BOOLEAN__BOXED_INT_BOXED_BOXED callback;
   gboolean v_return;
 
   g_return_if_fail (return_value != NULL);
@@ -98,19 +95,19 @@ udisks_daemon_marshal_BOOLEAN__BOXED_INT_BOXED_BOXED (GClosure     *closure,
 /* BOOLEAN:BOOLEAN,BOXED (udisks-daemon-marshal.list:2) */
 void
 udisks_daemon_marshal_BOOLEAN__BOOLEAN_BOXED (GClosure     *closure,
-                                              GValue       *return_value G_GNUC_UNUSED,
+                                              GValue       *return_value,
                                               guint         n_param_values,
                                               const GValue *param_values,
                                               gpointer      invocation_hint G_GNUC_UNUSED,
                                               gpointer      marshal_data)
 {
-  typedef gboolean (*GMarshalFunc_BOOLEAN__BOOLEAN_BOXED) (gpointer     data1,
-                                                           gboolean     arg_1,
-                                                           gpointer     arg_2,
-                                                           gpointer     data2);
-  register GMarshalFunc_BOOLEAN__BOOLEAN_BOXED callback;
-  register GCClosure *cc = (GCClosure*) closure;
-  register gpointer data1, data2;
+  typedef gboolean (*GMarshalFunc_BOOLEAN__BOOLEAN_BOXED) (gpointer data1,
+                                                           gboolean arg1,
+                                                           gpointer arg2,
+                                                           gpointer data2);
+  GCClosure *cc = (GCClosure *) closure;
+  gpointer data1, data2;
+  GMarshalFunc_BOOLEAN__BOOLEAN_BOXED callback;
   gboolean v_return;
 
   g_return_if_fail (return_value != NULL);

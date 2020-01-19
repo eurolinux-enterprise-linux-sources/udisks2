@@ -44,7 +44,15 @@
 #if defined(HAVE_LIBSYSTEMD_LOGIN)
 #include <systemd/sd-daemon.h>
 #include <systemd/sd-login.h>
+#endif
 
+#if defined(HAVE_ELOGIND) && !defined(HAVE_LIBSYSTEMD_LOGIN)
+#include <elogind/sd-login.h>
+/* re-use HAVE_LIBSYSTEMD_LOGIN to not clutter the source file */
+#define HAVE_LIBSYSTEMD_LOGIN 1
+#endif
+
+#if defined(HAVE_LIBSYSTEMD_LOGIN)
 #define LOGIND_AVAILABLE() (access("/run/systemd/seats/", F_OK) >= 0)
 #endif
 
@@ -55,6 +63,129 @@
  *
  * Various utility routines.
  */
+
+
+/**
+ * udisks_string_concat:
+ * @a: First part
+ * @b: Second part
+ *
+ * Returns: A new #GString holding the concatenation of the inputs.
+ */
+GString* udisks_string_concat (GString *a,
+                               GString *b)
+{
+  GString *result;
+  result = g_string_sized_new (a->len + b->len);
+  g_string_append_len (result, a->str, a->len);
+  g_string_append_len (result, b->str, b->len);
+  return result;
+}
+
+gchar *
+udisks_daemon_util_subst_str (const gchar *str,
+           const gchar *from,
+           const gchar *to)
+{
+    gchar **parts;
+    gchar *result;
+
+    parts = g_strsplit (str, from, 0);
+    result = g_strjoinv (to, parts);
+    g_strfreev (parts);
+    return result;
+}
+
+gchar *
+udisks_daemon_util_subst_str_and_escape (const gchar *str,
+                      const gchar *from,
+                      const gchar *to)
+{
+  gchar *quoted_and_escaped;
+  gchar *ret;
+  quoted_and_escaped = udisks_daemon_util_escape_and_quote (to);
+  ret = udisks_daemon_util_subst_str (str, from, quoted_and_escaped);
+  g_free (quoted_and_escaped);
+  return ret;
+}
+
+/**
+ * udisks_string_wipe_and_free:
+ * @string: A string with potentially unsafe content or %NULL.
+ *
+ * Wipes the buffer and frees the string.
+ */
+void udisks_string_wipe_and_free (GString *string)
+{
+  if (string != NULL)
+    {
+      memset (string->str, '\0', string->len);
+      g_string_free (string, TRUE);
+    }
+}
+
+/**
+ * udisks_variant_lookup_binary:
+ * @dict: A dictionary #GVariant.
+ * @name: The name of the item to lookup.
+ * @out_text: (out): Return location for the binary text as #GString.
+ *
+ * Looks up binary data in a dictionary #GVariant and returns it as #GString.
+ *
+ * If the value is a bytestring ("ay"), it can contain arbitrary binary data
+ * including '\0' values. If the value is a string ("s"), @out_text does not
+ * include the terminating '\0' character.
+ *
+ * Returns: %TRUE if @dict contains an item @name of type "ay" or "s" that was
+ * successfully stored in @out_text, and %FALSE otherwise.
+ */
+gboolean
+udisks_variant_lookup_binary (GVariant     *dict,
+                              const gchar  *name,
+                              GString     **out_text)
+{
+  GVariant* item = g_variant_lookup_value (dict, name, NULL);
+  if (item)
+    return udisks_variant_get_binary (item, out_text);
+  return FALSE;
+}
+
+/**
+ * udisks_variant_get_binary:
+ * @value: A #GVariant of type "ay" or "s".
+ * @out_text: (out): Return location for the binary text as #GString.
+ *
+ * Gets binary data contained in a BYTEARRAY or STRING #GVariant and returns
+ * it as a #GString.
+ *
+ * If the value is a bytestring ("ay"), it can contain arbitrary binary data
+ * including '\0' values. If the value is a string ("s"), @out_text does not
+ * include the terminating '\0' character.
+ *
+ * Returns: %TRUE if @value is a bytestring or string #GVariant and was
+ * successfully stored in @out_text, and %FALSE otherwise.
+ */
+gboolean
+udisks_variant_get_binary (GVariant  *value,
+                           GString  **out_text)
+{
+  const gchar* str = NULL;
+  gsize size = 0;
+
+  if (g_variant_is_of_type (value, G_VARIANT_TYPE_STRING))
+      str = g_variant_get_string (value, &size);
+  else if (g_variant_is_of_type (value, G_VARIANT_TYPE_BYTESTRING))
+      str = g_variant_get_fixed_array (value, &size, sizeof (guchar));
+
+  if (str)
+    {
+      *out_text = g_string_new_len (str, size);
+      return TRUE;
+    }
+
+  return FALSE;
+}
+
 
 /**
  * udisks_decode_udev_string:
@@ -157,7 +288,7 @@ udisks_safe_append_to_object_path (GString      *str,
       else
         {
           /* Escape bytes not in [A-Z][a-z][0-9] as _<hex-with-two-digits> */
-          g_string_append_printf (str, "_%02x", c);
+          g_string_append_printf (str, "_%02x", (guint) c);
         }
     }
 }
@@ -450,16 +581,17 @@ _safe_polkit_details_insert_uint64 (PolkitDetails *details, const gchar *key, gu
 }
 
 static gboolean
-check_authorization_no_polkit (UDisksDaemon          *daemon,
-                               UDisksObject          *object,
-                               const gchar           *action_id,
-                               GVariant              *options,
-                               const gchar           *message,
-                               GDBusMethodInvocation *invocation)
+check_authorization_no_polkit (UDisksDaemon            *daemon,
+                               UDisksObject            *object,
+                               const gchar             *action_id,
+                               GVariant                *options,
+                               const gchar             *message,
+                               GDBusMethodInvocation   *invocation,
+                               GError                 **error)
 {
   gboolean ret = FALSE;
   uid_t caller_uid = -1;
-  GError *error = NULL;
+  GError *sub_error = NULL;
 
   if (!udisks_daemon_util_get_caller_uid_sync (daemon,
                                                invocation,
@@ -467,15 +599,15 @@ check_authorization_no_polkit (UDisksDaemon          *daemon,
                                                &caller_uid,
                                                NULL,         /* gid_t *out_gid */
                                                NULL,         /* gchar **out_user_name */
-                                               &error))
+                                               &sub_error))
     {
-      g_dbus_method_invocation_return_error (invocation,
-                                             UDISKS_ERROR,
-                                             UDISKS_ERROR_FAILED,
-                                             "Error getting uid for caller with bus name %s: %s (%s, %d)",
-                                             g_dbus_method_invocation_get_sender (invocation),
-                                             error->message, g_quark_to_string (error->domain), error->code);
-      g_clear_error (&error);
+      g_set_error (error,
+                   UDISKS_ERROR,
+                   UDISKS_ERROR_FAILED,
+                   "Error getting uid for caller with bus name %s: %s (%s, %d)",
+                   g_dbus_method_invocation_get_sender (invocation),
+                   sub_error->message, g_quark_to_string (sub_error->domain), sub_error->code);
+      g_clear_error (&sub_error);
       goto out;
     }
 
@@ -486,10 +618,10 @@ check_authorization_no_polkit (UDisksDaemon          *daemon,
     }
   else
     {
-      g_dbus_method_invocation_return_error_literal (invocation,
-                                                     UDISKS_ERROR,
-                                                     UDISKS_ERROR_NOT_AUTHORIZED,
-                                                     "Not authorized to perform operation (polkit authority not available and caller is not uid 0)");
+      g_set_error (error,
+                   UDISKS_ERROR,
+                   UDISKS_ERROR_NOT_AUTHORIZED,
+                   "Not authorized to perform operation (polkit authority not available and caller is not uid 0)");
     }
 
  out:
@@ -540,12 +672,37 @@ udisks_daemon_util_check_authorization_sync (UDisksDaemon          *daemon,
                                              const gchar           *message,
                                              GDBusMethodInvocation *invocation)
 {
+  GError *error = NULL;
+  if (!udisks_daemon_util_check_authorization_sync_with_error (daemon,
+                                                               object,
+                                                               action_id,
+                                                               options,
+                                                               message,
+                                                               invocation,
+                                                               &error))
+    {
+      g_dbus_method_invocation_take_error (invocation, error);
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+gboolean
+udisks_daemon_util_check_authorization_sync_with_error (UDisksDaemon           *daemon,
+                                                        UDisksObject           *object,
+                                                        const gchar            *action_id,
+                                                        GVariant               *options,
+                                                        const gchar            *message,
+                                                        GDBusMethodInvocation  *invocation,
+                                                        GError                **error)
+{
   PolkitAuthority *authority = NULL;
   PolkitSubject *subject = NULL;
   PolkitDetails *details = NULL;
   PolkitCheckAuthorizationFlags flags = POLKIT_CHECK_AUTHORIZATION_FLAGS_NONE;
   PolkitAuthorizationResult *result = NULL;
-  GError *error = NULL;
+  GError *sub_error = NULL;
   gboolean ret = FALSE;
   UDisksBlock *block = NULL;
   UDisksDrive *drive = NULL;
@@ -559,7 +716,7 @@ udisks_daemon_util_check_authorization_sync (UDisksDaemon          *daemon,
   authority = udisks_daemon_get_authority (daemon);
   if (authority == NULL)
     {
-      ret = check_authorization_no_polkit (daemon, object, action_id, options, message, invocation);
+      ret = check_authorization_no_polkit (daemon, object, action_id, options, message, invocation, error);
       goto out;
     }
 
@@ -691,51 +848,51 @@ udisks_daemon_util_check_authorization_sync (UDisksDaemon          *daemon,
   if (details_drive != NULL)
     polkit_details_insert (details, "drive", details_drive);
 
-  error = NULL;
+  sub_error = NULL;
   result = polkit_authority_check_authorization_sync (authority,
                                                       subject,
                                                       action_id,
                                                       details,
                                                       flags,
                                                       NULL, /* GCancellable* */
-                                                      &error);
+                                                      &sub_error);
   if (result == NULL)
     {
-      if (error->domain != POLKIT_ERROR)
+      if (sub_error->domain != POLKIT_ERROR)
         {
           /* assume polkit authority is not available (e.g. could be the service
            * manager returning org.freedesktop.systemd1.Masked)
            */
-          g_error_free (error);
-          ret = check_authorization_no_polkit (daemon, object, action_id, options, message, invocation);
+          g_clear_error (&sub_error);
+          ret = check_authorization_no_polkit (daemon, object, action_id, options, message, invocation, error);
         }
       else
         {
-          g_dbus_method_invocation_return_error (invocation,
-                                                 UDISKS_ERROR,
-                                                 UDISKS_ERROR_FAILED,
-                                                 "Error checking authorization: %s (%s, %d)",
-                                                 error->message,
-                                                 g_quark_to_string (error->domain),
-                                                 error->code);
-          g_error_free (error);
+          g_set_error (error,
+                       UDISKS_ERROR,
+                       UDISKS_ERROR_FAILED,
+                       "Error checking authorization: %s (%s, %d)",
+                       sub_error->message,
+                       g_quark_to_string (sub_error->domain),
+                       sub_error->code);
+          g_clear_error (&sub_error);
         }
       goto out;
     }
   if (!polkit_authorization_result_get_is_authorized (result))
     {
       if (polkit_authorization_result_get_dismissed (result))
-        g_dbus_method_invocation_return_error_literal (invocation,
-                                                       UDISKS_ERROR,
-                                                       UDISKS_ERROR_NOT_AUTHORIZED_DISMISSED,
-                                                       "The authentication dialog was dismissed");
+        g_set_error (error,
+                     UDISKS_ERROR,
+                     UDISKS_ERROR_NOT_AUTHORIZED_DISMISSED,
+                     "The authentication dialog was dismissed");
       else
-        g_dbus_method_invocation_return_error_literal (invocation,
-                                                       UDISKS_ERROR,
-                                                       polkit_authorization_result_get_is_challenge (result) ?
-                                                       UDISKS_ERROR_NOT_AUTHORIZED_CAN_OBTAIN :
-                                                       UDISKS_ERROR_NOT_AUTHORIZED,
-                                                       "Not authorized to perform operation");
+        g_set_error (error,
+                     UDISKS_ERROR,
+                     polkit_authorization_result_get_is_challenge (result) ?
+                     UDISKS_ERROR_NOT_AUTHORIZED_CAN_OBTAIN :
+                     UDISKS_ERROR_NOT_AUTHORIZED,
+                     "Not authorized to perform operation");
       goto out;
     }
 
@@ -755,6 +912,61 @@ udisks_daemon_util_check_authorization_sync (UDisksDaemon          *daemon,
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
+
+static gboolean
+dbus_freedesktop_guint32_get (GDBusMethodInvocation   *invocation,
+                              GCancellable            *cancellable,
+                              const gchar             *method,
+                              guint32                 *out_value,
+                              GError                 **error)
+{
+  gboolean ret = FALSE;
+  GError *local_error = NULL;
+  GVariant *value;
+  guint32 fetched = 0;
+  const gchar *caller = g_dbus_method_invocation_get_sender (invocation);
+
+
+  value = g_dbus_connection_call_sync (g_dbus_method_invocation_get_connection (invocation),
+                                       "org.freedesktop.DBus",  /* bus name */
+                                       "/org/freedesktop/DBus", /* object path */
+                                       "org.freedesktop.DBus",  /* interface */
+                                       method, /* method */
+                                       g_variant_new ("(s)", caller),
+                                       G_VARIANT_TYPE ("(u)"),
+                                       G_DBUS_CALL_FLAGS_NONE,
+                                       -1, /* timeout_msec */
+                                       cancellable,
+                                       &local_error);
+  if (value == NULL)
+    {
+      g_set_error (error,
+                   UDISKS_ERROR,
+                   UDISKS_ERROR_FAILED,
+                   "Error determining uid of caller %s: %s (%s, %d)",
+                   caller,
+                   local_error->message,
+                   g_quark_to_string (local_error->domain),
+                   local_error->code);
+      g_clear_error (&local_error);
+      goto out;
+    }
+
+  {
+    G_STATIC_ASSERT (sizeof (uid_t) == sizeof (guint32));
+    G_STATIC_ASSERT (sizeof (pid_t) == sizeof (guint32));
+  }
+
+  g_variant_get (value, "(u)", &fetched);
+  if (out_value != NULL)
+    *out_value = fetched;
+
+  g_variant_unref (value);
+  ret = TRUE;
+out:
+  return ret;
+}
+
 
 /**
  * udisks_daemon_util_get_caller_uid_sync:
@@ -781,48 +993,19 @@ udisks_daemon_util_get_caller_uid_sync (UDisksDaemon            *daemon,
                                         GError                 **error)
 {
   gboolean ret;
-  const gchar *caller;
-  GVariant *value;
-  GError *local_error;
   uid_t uid;
 
   /* TODO: cache this on @daemon */
 
   ret = FALSE;
 
-  caller = g_dbus_method_invocation_get_sender (invocation);
-
-  local_error = NULL;
-  value = g_dbus_connection_call_sync (g_dbus_method_invocation_get_connection (invocation),
-                                       "org.freedesktop.DBus",  /* bus name */
-                                       "/org/freedesktop/DBus", /* object path */
-                                       "org.freedesktop.DBus",  /* interface */
-                                       "GetConnectionUnixUser", /* method */
-                                       g_variant_new ("(s)", caller),
-                                       G_VARIANT_TYPE ("(u)"),
-                                       G_DBUS_CALL_FLAGS_NONE,
-                                       -1, /* timeout_msec */
-                                       cancellable,
-                                       &local_error);
-  if (value == NULL)
+  if (!dbus_freedesktop_guint32_get (invocation, cancellable,
+                                     "GetConnectionUnixUser",
+                                     &uid, error))
     {
-      g_set_error (error,
-                   UDISKS_ERROR,
-                   UDISKS_ERROR_FAILED,
-                   "Error determining uid of caller %s: %s (%s, %d)",
-                   caller,
-                   local_error->message,
-                   g_quark_to_string (local_error->domain),
-                   local_error->code);
-      g_error_free (local_error);
       goto out;
     }
 
-  {
-    G_STATIC_ASSERT (sizeof (uid_t) == sizeof (guint32));
-  }
-
-  g_variant_get (value, "(u)", &uid);
   if (out_uid != NULL)
     *out_uid = uid;
 
@@ -830,7 +1013,7 @@ udisks_daemon_util_get_caller_uid_sync (UDisksDaemon            *daemon,
     {
       struct passwd pwstruct;
       gchar pwbuf[8192];
-      static struct passwd *pw;
+      struct passwd *pw = NULL;
       int rc;
 
       rc = getpwuid_r (uid, &pwstruct, pwbuf, sizeof pwbuf, &pw);
@@ -840,6 +1023,7 @@ udisks_daemon_util_get_caller_uid_sync (UDisksDaemon            *daemon,
                        UDISKS_ERROR,
                        UDISKS_ERROR_FAILED,
                        "User with uid %d does not exist", (gint) uid);
+          goto out;
         }
       else if (pw == NULL)
         {
@@ -882,55 +1066,15 @@ udisks_daemon_util_get_caller_pid_sync (UDisksDaemon            *daemon,
                                         pid_t                   *out_pid,
                                         GError                 **error)
 {
-  gboolean ret;
-  const gchar *caller;
-  GVariant *value;
-  GError *local_error;
-  pid_t pid;
+  // "GetConnectionUnixProcessID"
 
   /* TODO: cache this on @daemon */
+  /* NOTE: pid_t is a signed 32 bit, but the
+   * GetConnectionUnixProcessID dbus method returns an unsigned */
 
-  ret = FALSE;
-
-  caller = g_dbus_method_invocation_get_sender (invocation);
-
-  local_error = NULL;
-  value = g_dbus_connection_call_sync (g_dbus_method_invocation_get_connection (invocation),
-                                       "org.freedesktop.DBus",  /* bus name */
-                                       "/org/freedesktop/DBus", /* object path */
-                                       "org.freedesktop.DBus",  /* interface */
-                                       "GetConnectionUnixProcessID", /* method */
-                                       g_variant_new ("(s)", caller),
-                                       G_VARIANT_TYPE ("(u)"),
-                                       G_DBUS_CALL_FLAGS_NONE,
-                                       -1, /* timeout_msec */
-                                       cancellable,
-                                       &local_error);
-  if (value == NULL)
-    {
-      g_set_error (error,
-                   UDISKS_ERROR,
-                   UDISKS_ERROR_FAILED,
-                   "Error determining uid of caller %s: %s (%s, %d)",
-                   caller,
-                   local_error->message,
-                   g_quark_to_string (local_error->domain),
-                   local_error->code);
-      g_error_free (local_error);
-      goto out;
-    }
-
-  {
-    G_STATIC_ASSERT (sizeof (uid_t) == sizeof (guint32));
-  }
-  g_variant_get (value, "(u)", &pid);
-  if (out_pid != NULL)
-    *out_pid = pid;
-
-  ret = TRUE;
-
- out:
-  return ret;
+  return dbus_freedesktop_guint32_get (invocation, cancellable,
+                                       "GetConnectionUnixProcessID",
+                                       (guint32*)(out_pid), error);
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -1037,22 +1181,23 @@ udisks_daemon_util_escape (const gchar *str)
 }
 
 /**
- * udisks_daemon_util_on_same_seat:
+ * udisks_daemon_util_on_user_seat:
  * @daemon: A #UDisksDaemon.
  * @object: The #GDBusObject that the call is on or %NULL.
- * @process: The process to check for.
+ * @user: The user to check for.
  *
  * Checks whether the device represented by @object (if any) is plugged into
- * a seat where the caller represented by @process is logged in.
+ * a seat where the caller represented by @user is logged in and active.
  *
  * This works if @object is a drive or a block object.
  *
- * Returns: %TRUE if @object and @process is on the same seat, %FALSE otherwise.
+ * Returns: %TRUE if @object is on the same seat as one of @user's
+ *  active sessions, %FALSE otherwise.
  */
 gboolean
-udisks_daemon_util_on_same_seat (UDisksDaemon          *daemon,
-                                 UDisksObject          *object,
-                                 pid_t                  process)
+udisks_daemon_util_on_user_seat (UDisksDaemon *daemon,
+                                 UDisksObject *object,
+                                 uid_t         user)
 {
 #if !defined(HAVE_LIBSYSTEMD_LOGIN)
   /* if we don't have systemd, assume it's always the same seat */
@@ -1093,16 +1238,9 @@ udisks_daemon_util_on_same_seat (UDisksDaemon          *daemon,
   if (drive == NULL)
     goto out;
 
-  /* It's not unexpected to not find a session, nor a seat associated with @process */
-  if (sd_pid_get_session (process, &session) == 0)
-    sd_session_get_seat (session, &seat);
-
-  /* If we don't know the seat of the caller, we assume the device is always on another seat */
-  if (seat == NULL)
-    goto out;
-
   drive_seat = udisks_drive_get_seat (drive);
-  if (g_strcmp0 (seat, drive_seat) == 0)
+
+  if (drive_seat != NULL && sd_uid_is_on_seat (user, TRUE, drive_seat) > 0)
     {
       ret = TRUE;
       goto out;
@@ -1144,7 +1282,7 @@ udisks_daemon_util_hexdump (gconstpointer data, gsize len)
           if (m > n && (m%4) == 0)
             g_string_append_c (ret, ' ');
           if (m < len)
-            g_string_append_printf (ret, "%02x ", bdata[m]);
+            g_string_append_printf (ret, "%02x ", (guint) bdata[m]);
           else
             g_string_append (ret, "   ");
         }
@@ -1339,7 +1477,7 @@ udisks_daemon_util_inhibit_system_sync (const gchar  *reason)
   connection = g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, &error);
   if (connection == NULL)
     {
-      udisks_error ("Error getting system bus: %s (%s, %d)",
+      udisks_critical ("Error getting system bus: %s (%s, %d)",
                     error->message, g_quark_to_string (error->domain), error->code);
       g_clear_error (&error);
       goto out;
@@ -1364,7 +1502,7 @@ udisks_daemon_util_inhibit_system_sync (const gchar  *reason)
                                                          &error);
   if (value == NULL)
     {
-      udisks_error ("Error inhibiting: %s (%s, %d)",
+      udisks_critical ("Error inhibiting: %s (%s, %d)",
                     error->message, g_quark_to_string (error->domain), error->code);
       g_clear_error (&error);
       goto out;
@@ -1378,7 +1516,7 @@ udisks_daemon_util_inhibit_system_sync (const gchar  *reason)
   ret->fd = g_unix_fd_list_get (fd_list, index, &error);
   if (ret->fd == -1)
     {
-      udisks_error ("Error getting fd: %s (%s, %d)",
+      udisks_critical ("Error getting fd: %s (%s, %d)",
                     error->message, g_quark_to_string (error->domain), error->code);
       g_clear_error (&error);
       g_free (ret);
@@ -1414,7 +1552,7 @@ udisks_daemon_util_uninhibit_system_sync (UDisksInhibitCookie *cookie)
       g_assert (cookie->magic == 0xdeadbeef);
       if (close (cookie->fd) != 0)
         {
-          udisks_error ("Error closing inhbit-fd: %m");
+          udisks_critical ("Error closing inhbit-fd: %m");
         }
       g_free (cookie);
     }
@@ -1484,4 +1622,3 @@ udisks_ata_identify_get_word (const guchar *identify_data, guint word_number)
  out:
   return ret;
 }
-

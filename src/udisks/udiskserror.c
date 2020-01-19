@@ -48,6 +48,18 @@ static const GDBusErrorEntry dbus_error_entries[] =
   {UDISKS_ERROR_TIMED_OUT,                    "org.freedesktop.UDisks2.Error.Timedout"},
   {UDISKS_ERROR_WOULD_WAKEUP,                 "org.freedesktop.UDisks2.Error.WouldWakeup"},
   {UDISKS_ERROR_DEVICE_BUSY,                  "org.freedesktop.UDisks2.Error.DeviceBusy"},
+  {UDISKS_ERROR_ISCSI_DAEMON_TRANSPORT_FAILED,"org.freedesktop.UDisks2.Error.ISCSI.DaemonTransportFailed"},
+  {UDISKS_ERROR_ISCSI_HOST_NOT_FOUND,         "org.freedesktop.UDisks2.Error.ISCSI.HostNotFound"},
+  {UDISKS_ERROR_ISCSI_IDMB,                   "org.freedesktop.UDisks2.Error.ISCSI.IDMB"},
+  {UDISKS_ERROR_ISCSI_LOGIN_FAILED,           "org.freedesktop.UDisks2.Error.ISCSI.LoginFailed"},
+  {UDISKS_ERROR_ISCSI_LOGIN_AUTH_FAILED,      "org.freedesktop.UDisks2.Error.ISCSI.LoginAuthFailed"},
+  {UDISKS_ERROR_ISCSI_LOGIN_FATAL,            "org.freedesktop.UDisks2.Error.ISCSI.LoginFatal"},
+  {UDISKS_ERROR_ISCSI_LOGOUT_FAILED,          "org.freedesktop.UDisks2.Error.ISCSI.LogoutFailed"},
+  {UDISKS_ERROR_ISCSI_NO_FIRMWARE,            "org.freedesktop.UDisks2.Error.ISCSI.NoFirmware"},
+  {UDISKS_ERROR_ISCSI_NO_OBJECTS_FOUND,       "org.freedesktop.UDisks2.Error.ISCSI.NoObjectsFound"},
+  {UDISKS_ERROR_ISCSI_NOT_CONNECTED,          "org.freedesktop.UDisks2.Error.ISCSI.NotConnected"},
+  {UDISKS_ERROR_ISCSI_TRANSPORT_FAILED,       "org.freedesktop.UDisks2.Error.ISCSI.TransportFailed"},
+  {UDISKS_ERROR_ISCSI_UNKNOWN_DISCOVERY_TYPE, "org.freedesktop.UDisks2.Error.ISCSI.UnknownDiscoveryType"},
 };
 
 GQuark

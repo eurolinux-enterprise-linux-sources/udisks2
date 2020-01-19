@@ -22,20 +22,26 @@
 #include <glib/gi18n-lib.h>
 
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <pwd.h>
 #include <grp.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <mntent.h>
-#include <sys/types.h>
+#include <sys/sysmacros.h>
+#ifdef HAVE_ACL
 #include <sys/acl.h>
+#endif
 #include <errno.h>
+#include <blockdev/fs.h>
+#include <blockdev/utils.h>
 
 #include <glib/gstdio.h>
 
 #include "udiskslogging.h"
 #include "udiskslinuxfilesystem.h"
+#include "udiskslinuxfilesystemhelpers.h"
 #include "udiskslinuxblockobject.h"
 #include "udiskslinuxfsinfo.h"
 #include "udisksdaemon.h"
@@ -44,6 +50,7 @@
 #include "udisksmountmonitor.h"
 #include "udisksmount.h"
 #include "udiskslinuxdevice.h"
+#include "udiskssimplejob.h"
 
 /**
  * SECTION:udiskslinuxfilesystem
@@ -77,6 +84,12 @@ static void filesystem_iface_init (UDisksFilesystemIface *iface);
 
 G_DEFINE_TYPE_WITH_CODE (UDisksLinuxFilesystem, udisks_linux_filesystem, UDISKS_TYPE_FILESYSTEM_SKELETON,
                          G_IMPLEMENT_INTERFACE (UDISKS_TYPE_FILESYSTEM, filesystem_iface_init));
+
+#ifdef HAVE_FHS_MEDIA
+#  define MOUNT_BASE "/media"
+#else
+#  define MOUNT_BASE "/run/media"
+#endif
 
 /* ---------------------------------------------------------------------------------------------------- */
 
@@ -207,7 +220,7 @@ is_in_filesystem_file (const gchar *filesystems_file,
                       error->message,
                       g_quark_to_string (error->domain),
                       error->code);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -275,7 +288,7 @@ typedef struct
 
 /* ---------------------- vfat -------------------- */
 
-static const gchar *vfat_defaults[] = { "uid=", "gid=", "shortname=mixed", "dmask=0077", "utf8=1", "showexec", "flush", NULL };
+static const gchar *vfat_defaults[] = { "uid=", "gid=", "shortname=mixed", "utf8=1", "showexec", "flush", NULL };
 static const gchar *vfat_allow[] = { "flush", "utf8=", "shortname=", "umask=", "dmask=", "fmask=", "codepage=", "iocharset=", "usefree", "showexec", NULL };
 static const gchar *vfat_allow_uid_self[] = { "uid=", NULL };
 static const gchar *vfat_allow_gid_self[] = { "gid=", NULL };
@@ -283,8 +296,8 @@ static const gchar *vfat_allow_gid_self[] = { "gid=", NULL };
 /* ---------------------- ntfs -------------------- */
 /* this is assuming that ntfs-3g is used */
 
-static const gchar *ntfs_defaults[] = { "uid=", "gid=", "dmask=0077", "fmask=0177", NULL };
-static const gchar *ntfs_allow[] = { "umask=", "dmask=", "fmask=", "locale=", "norecover", "ignore_case", "windows_names", "compression", "nocompression", NULL };
+static const gchar *ntfs_defaults[] = { "uid=", "gid=", NULL };
+static const gchar *ntfs_allow[] = { "umask=", "dmask=", "fmask=", "locale=", "norecover", "ignore_case", "windows_names", "compression", "nocompression", "big_writes", NULL };
 static const gchar *ntfs_allow_uid_self[] = { "uid=", NULL };
 static const gchar *ntfs_allow_gid_self[] = { "gid=", NULL };
 
@@ -297,22 +310,29 @@ static const gchar *iso9660_allow_gid_self[] = { "gid=", NULL };
 
 /* ---------------------- udf -------------------- */
 
-static const gchar *udf_defaults[] = { "uid=", "gid=", "iocharset=utf8", "umask=0077", NULL };
+static const gchar *udf_defaults[] = { "uid=", "gid=", "iocharset=utf8", NULL };
 static const gchar *udf_allow[] = { "iocharset=", "umask=", NULL };
 static const gchar *udf_allow_uid_self[] = { "uid=", NULL };
 static const gchar *udf_allow_gid_self[] = { "gid=", NULL };
 
 /* ---------------------- exfat -------------------- */
 
-static const gchar *exfat_defaults[] = { "uid=", "gid=", "iocharset=utf8", "namecase=0", "errors=remount-ro", "umask=0077", NULL };
+static const gchar *exfat_defaults[] = { "uid=", "gid=", "iocharset=utf8", "namecase=0", "errors=remount-ro", NULL };
 static const gchar *exfat_allow[] = { "dmask=", "errors=", "fmask=", "iocharset=", "namecase=", "umask=", NULL };
 static const gchar *exfat_allow_uid_self[] = { "uid=", NULL };
 static const gchar *exfat_allow_gid_self[] = { "gid=", NULL };
 
+/* ---------------------- hfs+ -------------------- */
+
+static const gchar *hfsplus_defaults[] = { "uid=", "gid=", "nls=utf8", NULL };
+static const gchar *hfsplus_allow[] = { "creator=", "type=", "umask=", "session=", "part=", "decompose", "nodecompose", "force", "nls=", NULL };
+static const gchar *hfsplus_allow_uid_self[] = { "uid=", NULL };
+static const gchar *hfsplus_allow_gid_self[] = { "gid=", NULL };
+
 /* ------------------------------------------------ */
 /* TODO: support context= */
 
-static const gchar *any_allow[] = { "exec", "noexec", "nodev", "nosuid", "atime", "noatime", "nodiratime", "ro", "rw", "sync", "dirsync", NULL };
+static const gchar *any_allow[] = { "exec", "noexec", "nodev", "nosuid", "atime", "noatime", "nodiratime", "ro", "rw", "sync", "dirsync", "noload", NULL };
 
 static const FSMountOptions fs_mount_options[] =
   {
@@ -321,6 +341,7 @@ static const FSMountOptions fs_mount_options[] =
     { "iso9660", iso9660_defaults, iso9660_allow, iso9660_allow_uid_self, iso9660_allow_gid_self },
     { "udf", udf_defaults, udf_allow, udf_allow_uid_self, udf_allow_gid_self },
     { "exfat", exfat_defaults, exfat_allow, exfat_allow_uid_self, exfat_allow_gid_self },
+    { "hfsplus", hfsplus_defaults, hfsplus_allow, hfsplus_allow_uid_self, hfsplus_allow_gid_self },
   };
 
 /* ------------------------------------------------ */
@@ -348,15 +369,18 @@ find_mount_options_for_fs (const gchar *fstype)
 static gid_t
 find_primary_gid (uid_t uid)
 {
-  struct passwd *pw;
+  struct passwd *pw = NULL;
+  struct passwd pwstruct;
+  gchar pwbuf[8192];
+  int rc;
   gid_t gid;
 
   gid = (gid_t) - 1;
 
-  pw = getpwuid (uid);
-  if (pw == NULL)
+  rc = getpwuid_r (uid, &pwstruct, pwbuf, sizeof pwbuf, &pw);
+  if (rc != 0 || pw == NULL)
     {
-      udisks_warning ("Error looking up uid %d: %m", uid);
+      udisks_warning ("Error looking up uid %u: %m", uid);
       goto out;
     }
   gid = pw->pw_gid;
@@ -370,7 +394,10 @@ is_uid_in_gid (uid_t uid,
                gid_t gid)
 {
   gboolean ret;
-  struct passwd *pw;
+  struct passwd *pw = NULL;
+  struct passwd pwstruct;
+  gchar pwbuf[8192];
+  int rc;
   static gid_t supplementary_groups[128];
   int num_supplementary_groups = 128;
   int n;
@@ -379,10 +406,10 @@ is_uid_in_gid (uid_t uid,
 
   ret = FALSE;
 
-  pw = getpwuid (uid);
-  if (pw == NULL)
+  rc = getpwuid_r (uid, &pwstruct, pwbuf, sizeof pwbuf, &pw);
+  if (rc != 0 || pw == NULL)
     {
-      udisks_warning ("Error looking up uid %d: %m", uid);
+      udisks_warning ("Error looking up uid %u: %m", uid);
       goto out;
     }
   if (pw->pw_gid == gid)
@@ -393,7 +420,7 @@ is_uid_in_gid (uid_t uid,
 
   if (getgrouplist (pw->pw_name, pw->pw_gid, supplementary_groups, &num_supplementary_groups) < 0)
     {
-      udisks_warning ("Error getting supplementary groups for uid %d: %m", uid);
+      udisks_warning ("Error getting supplementary groups for uid %u: %m", uid);
       goto out;
     }
 
@@ -541,7 +568,7 @@ prepend_default_mount_options (const FSMountOptions *fsmo,
 
           if (strcmp (option, "uid=") == 0)
             {
-              s = g_strdup_printf ("uid=%d", caller_uid);
+              s = g_strdup_printf ("uid=%u", caller_uid);
               g_ptr_array_add (options, s);
             }
           else if (strcmp (option, "gid=") == 0)
@@ -549,7 +576,7 @@ prepend_default_mount_options (const FSMountOptions *fsmo,
               gid = find_primary_gid (caller_uid);
               if (gid != (gid_t) - 1)
                 {
-                  s = g_strdup_printf ("gid=%d", gid);
+                  s = g_strdup_printf ("gid=%u", gid);
                   g_ptr_array_add (options, s);
                 }
             }
@@ -575,33 +602,6 @@ prepend_default_mount_options (const FSMountOptions *fsmo,
   return (char **) g_ptr_array_free (options, FALSE);
 }
 
-static gchar *
-subst_str (const gchar *str,
-           const gchar *from,
-           const gchar *to)
-{
-    gchar **parts;
-    gchar *result;
-
-    parts = g_strsplit (str, from, 0);
-    result = g_strjoinv (to, parts);
-    g_strfreev (parts);
-    return result;
-}
-
-static gchar *
-subst_str_and_escape (const gchar *str,
-                      const gchar *from,
-                      const gchar *to)
-{
-  gchar *quoted_and_escaped;
-  gchar *ret;
-  quoted_and_escaped = udisks_daemon_util_escape_and_quote (to);
-  ret = subst_str (str, from, quoted_and_escaped);
-  g_free (quoted_and_escaped);
-  return ret;
-}
-
 /* ---------------------------------------------------------------------------------------------------- */
 
 /*
@@ -615,9 +615,9 @@ subst_str_and_escape (const gchar *str,
  * Returns: A valid UTF-8 string with the filesystem type (may be "auto") or %NULL if @error is set. Free with g_free().
  */
 static gchar *
-calculate_fs_type (UDisksBlock               *block,
-                   GVariant                  *given_options,
-                   GError                   **error)
+calculate_fs_type (UDisksBlock  *block,
+                   GVariant     *given_options,
+                   GError      **error)
 {
   gchar *fs_type_to_use = NULL;
   const gchar *probed_fs_type = NULL;
@@ -696,12 +696,12 @@ calculate_fs_type (UDisksBlock               *block,
  * Returns: A string with mount options or %NULL if @error is set. Free with g_free().
  */
 static gchar *
-calculate_mount_options (UDisksDaemon              *daemon,
-                         UDisksBlock               *block,
-                         uid_t                      caller_uid,
-                         const gchar               *fs_type,
-                         GVariant                  *options,
-                         GError                   **error)
+calculate_mount_options (UDisksDaemon  *daemon,
+                         UDisksBlock   *block,
+                         uid_t          caller_uid,
+                         const gchar   *fs_type,
+                         GVariant      *options,
+                         GError       **error)
 {
   const FSMountOptions *fsmo;
   gchar **options_to_use;
@@ -790,6 +790,7 @@ ensure_utf8 (const gchar *s)
 
 /* ---------------------------------------------------------------------------------------------------- */
 
+#ifdef HAVE_ACL
 static gboolean
 add_acl (const gchar  *path,
          uid_t         uid,
@@ -810,21 +811,19 @@ add_acl (const gchar  *path,
       acl_calc_mask (&acl) == -1 ||
       acl_set_file (path, ACL_TYPE_ACCESS, acl) == -1)
     {
-      g_set_error (error,
-                   G_IO_ERROR,
-                   g_io_error_from_errno (errno),
+      udisks_warning(
                    "Adding read ACL for uid %d to `%s' failed: %m",
                    (gint) uid, path);
-      goto out;
+      chown(path, uid, -1);
     }
 
   ret = TRUE;
 
- out:
   if (acl != NULL)
     acl_free (acl);
   return ret;
 }
+#endif
 
 /*
  * calculate_mount_point: <internal>
@@ -841,13 +840,13 @@ add_acl (const gchar  *path,
  * Returns: A UTF-8 string with the mount point to use or %NULL if @error is set. Free with g_free().
  */
 static gchar *
-calculate_mount_point (UDisksDaemon              *daemon,
-                       UDisksBlock               *block,
-                       uid_t                      uid,
-                       gid_t                      gid,
-                       const gchar               *user_name,
-                       const gchar               *fs_type,
-                       GError                   **error)
+calculate_mount_point (UDisksDaemon  *daemon,
+                       UDisksBlock   *block,
+                       uid_t          uid,
+                       gid_t          gid,
+                       const gchar   *user_name,
+                       const gchar   *fs_type,
+                       GError       **error)
 {
   UDisksLinuxBlockObject *object = NULL;
   gboolean fs_shared = FALSE;
@@ -885,27 +884,28 @@ calculate_mount_point (UDisksDaemon              *daemon,
     }
 
   /* If we know the user-name and it doesn't have any '/' character in
-   * it, mount in /run/media/$USER
+   * it, mount in MOUNT_BASE/$USER
    */
   if (!fs_shared && (user_name != NULL && strstr (user_name, "/") == NULL))
     {
-      mount_dir = g_strdup_printf ("/run/media/%s", user_name);
+      mount_dir = g_strdup_printf (MOUNT_BASE "/%s", user_name);
       if (!g_file_test (mount_dir, G_FILE_TEST_EXISTS))
         {
-          /* First ensure that /run/media exists */
-          if (!g_file_test ("/run/media", G_FILE_TEST_EXISTS))
+          /* First ensure that MOUNT_BASE exists */
+          if (g_mkdir (MOUNT_BASE, 0755) != 0 && errno != EEXIST)
             {
-              if (g_mkdir ("/run/media", 0755) != 0)
-                {
-                  g_set_error (error,
-                               UDISKS_ERROR,
-                               UDISKS_ERROR_FAILED,
-                               "Error creating directory /run/media: %m");
-                  goto out;
-                }
+              g_set_error (error,
+                           UDISKS_ERROR,
+                           UDISKS_ERROR_FAILED,
+                           "Error creating directory " MOUNT_BASE ": %m");
+              goto out;
             }
-          /* Then create the per-user /run/media/$USER */
-          if (g_mkdir (mount_dir, 0700) != 0)
+          /* Then create the per-user MOUNT_BASE/$USER */
+#ifdef HAVE_ACL
+          if (g_mkdir (mount_dir, 0700) != 0 && errno != EEXIST)
+#else
+          if (g_mkdir (mount_dir, 0750) != 0 && errno != EEXIST)
+#endif
             {
               g_set_error (error,
                            UDISKS_ERROR,
@@ -915,8 +915,17 @@ calculate_mount_point (UDisksDaemon              *daemon,
               goto out;
             }
           /* Finally, add the read+execute ACL for $USER */
+#ifdef HAVE_ACL
           if (!add_acl (mount_dir, uid, error))
             {
+#else
+          if (chown (mount_dir, -1, gid) == -1)
+            {
+               g_set_error (error, G_IO_ERROR,
+                            g_io_error_from_errno (errno),
+                            "Failed to change gid to %d for %s: %m",
+                            (gint) gid, mount_dir);
+#endif
               if (rmdir (mount_dir) != 0)
                 udisks_warning ("Error calling rmdir() on %s: %m", mount_dir);
               goto out;
@@ -981,7 +990,7 @@ calculate_mount_point (UDisksDaemon              *daemon,
       else
         {
           g_free (mount_point);
-          mount_point = g_strdup_printf ("%s%d", orig_mount_point, n++);
+          mount_point = g_strdup_printf ("%s%u", orig_mount_point, n++);
         }
     }
   g_free (orig_mount_point);
@@ -1019,10 +1028,10 @@ has_option (const gchar *options,
 }
 
 static gboolean
-is_in_fstab (UDisksBlock        *block,
-             const gchar        *fstab_path,
-             gchar             **out_mount_point,
-             gchar             **out_mount_options)
+is_in_fstab (UDisksBlock  *block,
+             const gchar  *fstab_path,
+             gchar       **out_mount_point,
+             gchar       **out_mount_options)
 {
   gboolean ret;
   FILE *f;
@@ -1051,6 +1060,14 @@ is_in_fstab (UDisksBlock        *block,
       else if (g_str_has_prefix (m->mnt_fsname, "LABEL="))
         {
           device = g_strdup_printf ("/dev/disk/by-label/%s", m->mnt_fsname + 6);
+        }
+      else if (g_str_has_prefix (m->mnt_fsname, "PARTUUID="))
+        {
+          device = g_strdup_printf ("/dev/disk/by-partuuid/%s", m->mnt_fsname + 9);
+        }
+      else if (g_str_has_prefix (m->mnt_fsname, "PARTLABEL="))
+        {
+          device = g_strdup_printf ("/dev/disk/by-partlabel/%s", m->mnt_fsname + 10);
         }
       else if (g_str_has_prefix (m->mnt_fsname, "/dev"))
         {
@@ -1100,9 +1117,9 @@ is_in_fstab (UDisksBlock        *block,
  * TODO: check if systemd has a specific "unit" for the device
  */
 static gboolean
-is_system_managed (UDisksBlock        *block,
-                   gchar             **out_mount_point,
-                   gchar             **out_mount_options)
+is_system_managed (UDisksBlock  *block,
+                   gchar       **out_mount_point,
+                   gchar       **out_mount_options)
 {
   gboolean ret;
 
@@ -1122,50 +1139,35 @@ is_system_managed (UDisksBlock        *block,
 
 /* runs in thread dedicated to handling @invocation */
 static gboolean
-handle_mount (UDisksFilesystem       *filesystem,
-              GDBusMethodInvocation  *invocation,
-              GVariant               *options)
+handle_mount (UDisksFilesystem      *filesystem,
+              GDBusMethodInvocation *invocation,
+              GVariant              *options)
 {
-  UDisksObject *object;
+  UDisksObject *object = NULL;
   UDisksBlock *block;
   UDisksDaemon *daemon;
   UDisksState *state;
   uid_t caller_uid;
   gid_t caller_gid;
-  pid_t caller_pid;
   const gchar * const *existing_mount_points;
   const gchar *probed_fs_usage;
-  gchar *fs_type_to_use;
-  gchar *mount_options_to_use;
-  gchar *mount_point_to_use;
-  gchar *fstab_mount_options;
-  gchar *escaped_fs_type_to_use;
-  gchar *escaped_mount_options_to_use;
-  gchar *escaped_mount_point_to_use;
-  gchar *error_message;
-  gchar *caller_user_name;
-  GError *error;
-  const gchar *action_id;
-  const gchar *message;
-  gboolean system_managed;
-  gchar *escaped_device = NULL;
+  gchar *fs_type_to_use = NULL;
+  gchar *mount_options_to_use = NULL;
+  gchar *mount_point_to_use = NULL;
+  gchar *fstab_mount_options = NULL;
+  gchar *caller_user_name = NULL;
+  GError *error = NULL;
+  const gchar *action_id = NULL;
+  const gchar *message = NULL;
+  gboolean system_managed = FALSE;
+  gboolean success = FALSE;
+  gchar *device = NULL;
+  UDisksBaseJob *job = NULL;
 
-  object = NULL;
-  error_message = NULL;
-  fs_type_to_use = NULL;
-  mount_options_to_use = NULL;
-  mount_point_to_use = NULL;
-  fstab_mount_options = NULL;
-  escaped_fs_type_to_use = NULL;
-  escaped_mount_options_to_use = NULL;
-  escaped_mount_point_to_use = NULL;
-  caller_user_name = NULL;
-  system_managed = FALSE;
 
   /* only allow a single call at a time */
   g_mutex_lock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
 
-  error = NULL;
   object = udisks_daemon_util_dup_object (filesystem, &error);
   if (object == NULL)
     {
@@ -1176,6 +1178,7 @@ handle_mount (UDisksFilesystem       *filesystem,
   block = udisks_object_peek_block (object);
   daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
   state = udisks_daemon_get_state (daemon);
+  device = udisks_block_dup_device (block);
 
   /* check if mount point is managed by e.g. /etc/fstab or similar */
   if (is_system_managed (block, &mount_point_to_use, &fstab_mount_options))
@@ -1200,7 +1203,7 @@ handle_mount (UDisksFilesystem       *filesystem,
                                              UDISKS_ERROR,
                                              UDISKS_ERROR_ALREADY_MOUNTED,
                                              "Device %s is already mounted at %s.\n",
-                                             udisks_block_get_device (block),
+                                             device,
                                              str->str);
       g_string_free (str, TRUE);
       goto out;
@@ -1216,25 +1219,12 @@ handle_mount (UDisksFilesystem       *filesystem,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  error = NULL;
-  if (!udisks_daemon_util_get_caller_pid_sync (daemon,
-                                               invocation,
-                                               NULL /* GCancellable */,
-                                               &caller_pid,
-                                               &error))
-    {
-      g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
   if (system_managed)
     {
-      gint status;
       gboolean mount_fstab_as_root = FALSE;
 
       if (!has_option (fstab_mount_options, "x-udisks-auth"))
@@ -1253,7 +1243,7 @@ handle_mount (UDisksFilesystem       *filesystem,
                 {
                   action_id = "org.freedesktop.udisks2.filesystem-mount-system";
                 }
-              else if (!udisks_daemon_util_on_same_seat (daemon, object, caller_pid))
+              else if (!udisks_daemon_util_on_user_seat (daemon, object, caller_uid))
                 {
                   action_id = "org.freedesktop.udisks2.filesystem-mount-other-seat";
                 }
@@ -1278,28 +1268,44 @@ handle_mount (UDisksFilesystem       *filesystem,
                                                      UDISKS_ERROR_FAILED,
                                                      "Error creating directory `%s' to be used for mounting %s: %m",
                                                      mount_point_to_use,
-                                                     udisks_block_get_device (block));
+                                                     device);
               goto out;
             }
         }
 
-      escaped_mount_point_to_use   = udisks_daemon_util_escape_and_quote (mount_point_to_use);
     mount_fstab_again:
-      if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                                  object,
-                                                  "filesystem-mount", caller_uid,
-                                                  NULL,  /* GCancellable */
-                                                  mount_fstab_as_root ? 0 : caller_uid, /* uid_t run_as_uid */
-                                                  mount_fstab_as_root ? 0 : caller_uid, /* uid_t run_as_euid */
-                                                  &status,
-                                                  &error_message,
-                                                  NULL,  /* input_string */
-                                                  "mount %s",
-                                                  escaped_mount_point_to_use))
+      job = udisks_daemon_launch_simple_job (daemon,
+                                             UDISKS_OBJECT (object),
+                                             "filesystem-mount",
+                                             mount_fstab_as_root ? 0 : caller_uid,
+                                             NULL /* cancellable */);
+
+      if (!mount_fstab_as_root)
         {
-          /* mount(8) exits with status 1 on "incorrect invocation or permissions" - if this is
-           * is so, try as as root */
-          if (!mount_fstab_as_root && WIFEXITED (status) && WEXITSTATUS (status) == 1)
+          BDExtraArg uid_arg = {g_strdup ("run_as_uid"), g_strdup_printf("%d", caller_uid)};
+          BDExtraArg gid_arg = {g_strdup ("run_as_gid"), g_strdup_printf("%d", find_primary_gid (caller_uid))};
+          const BDExtraArg *extra_args[3] = {&uid_arg, &gid_arg, NULL};
+
+          success = bd_fs_mount (NULL, mount_point_to_use, NULL, NULL, extra_args, &error);
+
+          g_free (uid_arg.opt);
+          g_free (uid_arg.val);
+          g_free (gid_arg.opt);
+          g_free (gid_arg.val);
+        }
+      else
+        {
+          success = bd_fs_mount (NULL, mount_point_to_use, NULL, NULL, NULL, &error);
+        }
+
+      if (!success)
+          udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      else
+          udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+
+      if (!success)
+        {
+          if (!mount_fstab_as_root && g_error_matches (error, BD_FS_ERROR, BD_FS_ERROR_AUTH))
             {
               if (!udisks_daemon_util_check_authorization_sync (daemon,
                                                                 object,
@@ -1326,12 +1332,12 @@ handle_mount (UDisksFilesystem       *filesystem,
                                                  UDISKS_ERROR,
                                                  UDISKS_ERROR_FAILED,
                                                  "Error mounting system-managed device %s: %s",
-                                                 udisks_block_get_device (block),
-                                                 error_message);
+                                                 device,
+                                                 error->message);
           goto out;
         }
-      udisks_notice ("Mounted %s (system) at %s on behalf of uid %d",
-                     udisks_block_get_device (block),
+      udisks_notice ("Mounted %s (system) at %s on behalf of uid %u",
+                     device,
                      mount_point_to_use,
                      caller_uid);
 
@@ -1365,7 +1371,7 @@ handle_mount (UDisksFilesystem       *filesystem,
                                              UDISKS_ERROR,
                                              UDISKS_ERROR_FAILED,
                                              "Cannot mount block device %s with probed usage `%s' - expected `filesystem'",
-                                             udisks_block_get_device (block),
+                                             device,
                                              probed_fs_usage);
       goto out;
     }
@@ -1378,7 +1384,7 @@ handle_mount (UDisksFilesystem       *filesystem,
   if (fs_type_to_use == NULL)
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1393,7 +1399,7 @@ handle_mount (UDisksFilesystem       *filesystem,
   if (mount_options_to_use == NULL)
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1415,7 +1421,7 @@ handle_mount (UDisksFilesystem       *filesystem,
         {
           action_id = "org.freedesktop.udisks2.filesystem-mount-system";
         }
-      else if (!udisks_daemon_util_on_same_seat (daemon, object, caller_pid))
+      else if (!udisks_daemon_util_on_user_seat (daemon, object, caller_uid))
         {
           action_id = "org.freedesktop.udisks2.filesystem-mount-other-seat";
         }
@@ -1441,7 +1447,7 @@ handle_mount (UDisksFilesystem       *filesystem,
   if (mount_point_to_use == NULL)
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1456,39 +1462,30 @@ handle_mount (UDisksFilesystem       *filesystem,
       goto out;
     }
 
-  escaped_fs_type_to_use       = udisks_daemon_util_escape_and_quote (fs_type_to_use);
-  escaped_mount_options_to_use = udisks_daemon_util_escape_and_quote (mount_options_to_use);
-  escaped_mount_point_to_use   = udisks_daemon_util_escape_and_quote (mount_point_to_use);
-  escaped_device               = udisks_daemon_util_escape_and_quote (udisks_block_get_device (block));
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "filesystem-mount",
+                                         0,
+                                         NULL /* cancellable */);
 
-  /* run mount(8) */
-  if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                              object,
-                                              "filesystem-mount", caller_uid,
-                                              NULL, /* GCancellable */
-                                              0,    /* uid_t run_as_uid */
-                                              0,    /* uid_t run_as_euid */
-                                              NULL, /* gint *out_status */
-                                              &error_message,
-                                              NULL,  /* input_string */
-                                              "mount -t %s -o %s %s %s",
-                                              escaped_fs_type_to_use,
-                                              escaped_mount_options_to_use,
-                                              escaped_device,
-                                              escaped_mount_point_to_use))
+  if (!bd_fs_mount (device, mount_point_to_use, fs_type_to_use, mount_options_to_use, NULL, &error))
     {
       /* ugh, something went wrong.. we need to clean up the created mount point */
       if (g_rmdir (mount_point_to_use) != 0)
         udisks_warning ("Error removing directory %s: %m", mount_point_to_use);
+
       g_dbus_method_invocation_return_error (invocation,
                                              UDISKS_ERROR,
                                              UDISKS_ERROR_FAILED,
                                              "Error mounting %s at %s: %s",
-                                             udisks_block_get_device (block),
+                                             device,
                                              mount_point_to_use,
-                                             error_message);
+                                             error->message);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
       goto out;
     }
+  else
+    udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
 
   /* update the mounted-fs file */
   udisks_state_add_mounted_fs (state,
@@ -1497,24 +1494,20 @@ handle_mount (UDisksFilesystem       *filesystem,
                                caller_uid,
                                FALSE); /* fstab_mounted */
 
-  udisks_notice ("Mounted %s at %s on behalf of uid %d",
-                 udisks_block_get_device (block),
+  udisks_notice ("Mounted %s at %s on behalf of uid %u",
+                 device,
                  mount_point_to_use,
                  caller_uid);
 
   udisks_filesystem_complete_mount (filesystem, invocation, mount_point_to_use);
 
  out:
-  g_free (escaped_device);
-  g_free (error_message);
-  g_free (escaped_fs_type_to_use);
-  g_free (escaped_mount_options_to_use);
-  g_free (escaped_mount_point_to_use);
   g_free (fs_type_to_use);
   g_free (mount_options_to_use);
   g_free (mount_point_to_use);
   g_free (fstab_mount_options);
   g_free (caller_user_name);
+  g_free (device);
   g_clear_object (&object);
 
   /* only allow a single call at a time */
@@ -1526,11 +1519,9 @@ handle_mount (UDisksFilesystem       *filesystem,
 /* ---------------------------------------------------------------------------------------------------- */
 
 static guint
-get_error_code_for_umount (gint         exit_status,
-                           const gchar *error_message)
+get_error_code_for_umount (const gchar *error_message)
 {
-  if (strstr (error_message, "device is busy") != NULL ||
-      strstr (error_message, "target is busy") != NULL)
+  if (strstr (error_message, "busy") != NULL)
     return UDISKS_ERROR_DEVICE_BUSY;
   else
     return UDISKS_ERROR_FAILED;
@@ -1538,39 +1529,29 @@ get_error_code_for_umount (gint         exit_status,
 
 /* runs in thread dedicated to handling @invocation */
 static gboolean
-handle_unmount (UDisksFilesystem       *filesystem,
-                GDBusMethodInvocation  *invocation,
-                GVariant               *options)
+handle_unmount (UDisksFilesystem      *filesystem,
+                GDBusMethodInvocation *invocation,
+                GVariant              *options)
 {
   UDisksObject *object;
   UDisksBlock *block;
   UDisksDaemon *daemon;
   UDisksState *state;
-  gchar *mount_point;
-  gchar *fstab_mount_options;
-  gchar *escaped_mount_point;
-  GError *error;
+  gchar *mount_point = NULL;
+  gchar *fstab_mount_options = NULL;
+  GError *error = NULL;
   uid_t mounted_by_uid;
   uid_t caller_uid;
-  gint status;
-  gchar *error_message;
   const gchar *const *mount_points;
-  gboolean opt_force;
-  gboolean rc;
-  gboolean system_managed;
+  gboolean opt_force = FALSE;
+  gboolean system_managed = FALSE;
   gboolean fstab_mounted;
-  gchar *escaped_device = NULL;
-
-  mount_point = NULL;
-  fstab_mount_options = NULL;
-  escaped_mount_point = NULL;
-  error_message = NULL;
-  opt_force = FALSE;
+  gboolean success;
+  UDisksBaseJob *job = NULL;
 
   /* only allow a single call at a time */
   g_mutex_lock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
 
-  error = NULL;
   object = udisks_daemon_util_dup_object (filesystem, &error);
   if (object == NULL)
     {
@@ -1581,7 +1562,6 @@ handle_unmount (UDisksFilesystem       *filesystem,
   block = udisks_object_peek_block (object);
   daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
   state = udisks_daemon_get_state (daemon);
-  system_managed = FALSE;
 
   if (options != NULL)
     {
@@ -1606,7 +1586,7 @@ handle_unmount (UDisksFilesystem       *filesystem,
   if (!udisks_daemon_util_get_caller_uid_sync (daemon, invocation, NULL, &caller_uid, NULL, NULL, &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1626,27 +1606,37 @@ handle_unmount (UDisksFilesystem       *filesystem,
 
       unmount_fstab_as_root = FALSE;
     unmount_fstab_again:
-      escaped_mount_point = udisks_daemon_util_escape_and_quote (mount_point);
-      /* right now -l is the only way to "force unmount" file systems... */
-      if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                                  object,
-                                                  "filesystem-unmount", caller_uid,
-                                                  NULL, /* GCancellable */
-                                                  unmount_fstab_as_root ? 0 : caller_uid, /* uid_t run_as_uid */
-                                                  unmount_fstab_as_root ? 0 : caller_uid, /* uid_t run_as_euid */
-                                                  &status,
-                                                  &error_message,
-                                                  NULL,  /* input_string */
-                                                  "umount %s %s",
-                                                  opt_force ? "-l" : "",
-                                                  escaped_mount_point))
+
+      job = udisks_daemon_launch_simple_job (daemon,
+                                             UDISKS_OBJECT (object),
+                                             "filesystem-unmount",
+                                             unmount_fstab_as_root ? 0 : caller_uid,
+                                             NULL);
+
+      if (!unmount_fstab_as_root)
         {
-          /* umount(8) does not (yet) have a specific exits status for
-           * "insufficient permissions" so just try again as root
-           *
-           * TODO: file bug asking for such an exit status
-           */
-          if (!unmount_fstab_as_root && WIFEXITED (status) && WEXITSTATUS (status) != 0)
+          BDExtraArg uid_arg = {g_strdup ("run_as_uid"), g_strdup_printf("%d", caller_uid)};
+          BDExtraArg gid_arg = {g_strdup ("run_as_gid"), g_strdup_printf("%d", find_primary_gid (caller_uid))};
+          const BDExtraArg *extra_args[3] = {&uid_arg, &gid_arg, NULL};
+
+          success = bd_fs_unmount (mount_point, opt_force, FALSE, extra_args, &error);
+
+          g_free (uid_arg.opt);
+          g_free (uid_arg.val);
+          g_free (gid_arg.opt);
+          g_free (gid_arg.val);
+        }
+      else
+          success = bd_fs_unmount (mount_point, opt_force, FALSE, NULL, &error);
+
+      if (!success)
+          udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      else
+          udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+
+      if (!success)
+        {
+          if (!unmount_fstab_as_root && error->code == BD_FS_ERROR_AUTH)
             {
               if (!udisks_daemon_util_check_authorization_sync (daemon,
                                                                 object,
@@ -1671,13 +1661,14 @@ handle_unmount (UDisksFilesystem       *filesystem,
 
           g_dbus_method_invocation_return_error (invocation,
                                                  UDISKS_ERROR,
-                                                 get_error_code_for_umount (status, error_message),
+                                                 get_error_code_for_umount (error->message),
                                                  "Error unmounting system-managed device %s: %s",
                                                  udisks_block_get_device (block),
-                                                 error_message);
+                                                 error->message);
+
           goto out;
         }
-      udisks_notice ("Unmounted %s (system) from %s on behalf of uid %d",
+      udisks_notice ("Unmounted %s (system) from %s on behalf of uid %u",
                      udisks_block_get_device (block),
                      mount_point,
                      caller_uid);
@@ -1720,65 +1711,36 @@ handle_unmount (UDisksFilesystem       *filesystem,
         goto out;
     }
 
-  escaped_device = udisks_daemon_util_escape_and_quote (udisks_block_get_device (block));
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "filesystem-unmount",
+                                         0,
+                                         NULL);
 
-  /* otherwise go ahead and unmount the filesystem */
-  if (mount_point != NULL)
-    {
-      escaped_mount_point = udisks_daemon_util_escape_and_quote (mount_point);
-      rc = udisks_daemon_launch_spawned_job_sync (daemon,
-                                                  object,
-                                                  "filesystem-unmount", caller_uid,
-                                                  NULL, /* GCancellable */
-                                                  0,    /* uid_t run_as_uid */
-                                                  0,    /* uid_t run_as_euid */
-                                                  NULL, /* gint *out_status */
-                                                  &error_message,
-                                                  NULL,  /* input_string */
-                                                  "umount %s %s",
-                                                  opt_force ? "-l" : "",
-                                                  escaped_mount_point);
-    }
-  else
-    {
-      /* mount_point == NULL */
-      rc = udisks_daemon_launch_spawned_job_sync (daemon,
-                                                  object,
-                                                  "filesystem-unmount", caller_uid,
-                                                  NULL, /* GCancellable */
-                                                  0,    /* uid_t run_as_uid */
-                                                  0,    /* uid_t run_as_euid */
-                                                  &status,
-                                                  &error_message,
-                                                  NULL,  /* input_string */
-                                                  "umount %s %s",
-                                                  opt_force ? "-l" : "",
-                                                  escaped_device);
-    }
-
-  if (!rc)
+  if (!bd_fs_unmount (mount_point ? mount_point : udisks_block_get_device (block),
+                      opt_force, FALSE, NULL, &error))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              UDISKS_ERROR,
-                                             get_error_code_for_umount (status, error_message),
+                                             get_error_code_for_umount (error->message),
                                              "Error unmounting %s: %s",
                                              udisks_block_get_device (block),
-                                             error_message);
+                                             error->message);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
       goto out;
     }
+  else
+    udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
 
   /* OK, filesystem unmounted.. the state/cleanup routines will remove the mountpoint for us */
 
-  udisks_notice ("Unmounted %s on behalf of uid %d",
+  udisks_notice ("Unmounted %s on behalf of uid %u",
                  udisks_block_get_device (block),
                  caller_uid);
 
   udisks_filesystem_complete_unmount (filesystem, invocation);
 
  out:
-  g_free (escaped_device);
-  g_free (error_message);
-  g_free (escaped_mount_point);
   g_free (mount_point);
   g_free (fstab_mount_options);
   g_clear_object (&object);
@@ -1790,33 +1752,12 @@ handle_unmount (UDisksFilesystem       *filesystem,
 
 /* ---------------------------------------------------------------------------------------------------- */
 
-static void
-on_set_label_job_completed (UDisksJob   *job,
-                            gboolean     success,
-                            const gchar *message,
-                            gpointer     user_data)
-{
-  GDBusMethodInvocation *invocation = G_DBUS_METHOD_INVOCATION (user_data);
-  UDisksFilesystem *filesystem;
-
-  filesystem = UDISKS_FILESYSTEM (g_dbus_method_invocation_get_user_data (invocation));
-
-  if (success)
-    udisks_filesystem_complete_set_label (filesystem, invocation);
-  else
-    g_dbus_method_invocation_return_error (invocation,
-                                           UDISKS_ERROR,
-                                           UDISKS_ERROR_FAILED,
-                                           "Error setting label: %s",
-                                           message);
-}
-
 /* runs in thread dedicated to handling method call */
 static gboolean
-handle_set_label (UDisksFilesystem       *filesystem,
-                  GDBusMethodInvocation  *invocation,
-                  const gchar            *label,
-                  GVariant               *options)
+handle_set_label (UDisksFilesystem      *filesystem,
+                  GDBusMethodInvocation *invocation,
+                  const gchar           *label,
+                  GVariant              *options)
 {
   UDisksBlock *block;
   UDisksObject *object;
@@ -1824,14 +1765,15 @@ handle_set_label (UDisksFilesystem       *filesystem,
   const gchar *probed_fs_usage;
   const gchar *probed_fs_type;
   const FSInfo *fs_info;
-  UDisksBaseJob *job;
   const gchar *action_id;
   const gchar *message;
   gchar *real_label = NULL;
   uid_t caller_uid;
   gid_t caller_gid;
-  pid_t caller_pid;
   gchar *command;
+  gint status = 0;
+  gchar *out_message = NULL;
+  gboolean success = FALSE;
   gchar *tmp;
   GError *error;
 
@@ -1851,18 +1793,6 @@ handle_set_label (UDisksFilesystem       *filesystem,
   block = udisks_object_peek_block (object);
 
   error = NULL;
-  if (!udisks_daemon_util_get_caller_pid_sync (daemon,
-                                               invocation,
-                                               NULL /* GCancellable */,
-                                               &caller_pid,
-                                               &error))
-    {
-      g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
-      goto out;
-    }
-
-  error = NULL;
   if (!udisks_daemon_util_get_caller_uid_sync (daemon,
                                                invocation,
                                                NULL /* GCancellable */,
@@ -1872,7 +1802,7 @@ handle_set_label (UDisksFilesystem       *filesystem,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1961,7 +1891,7 @@ handle_set_label (UDisksFilesystem       *filesystem,
         {
           action_id = "org.freedesktop.udisks2.modify-device-system";
         }
-      else if (!udisks_daemon_util_on_same_seat (daemon, UDISKS_OBJECT (object), caller_pid))
+      else if (!udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
         {
           action_id = "org.freedesktop.udisks2.modify-device-other-seat";
         }
@@ -1980,34 +1910,663 @@ handle_set_label (UDisksFilesystem       *filesystem,
 
   if (fs_info->command_clear_label != NULL && strlen (label) == 0)
     {
-      command = subst_str_and_escape (fs_info->command_clear_label, "$DEVICE", udisks_block_get_device (block));
+      command = udisks_daemon_util_subst_str_and_escape (fs_info->command_clear_label, "$DEVICE", udisks_block_get_device (block));
     }
   else
     {
-      tmp = subst_str_and_escape (fs_info->command_change_label, "$DEVICE", udisks_block_get_device (block));
-      command = subst_str_and_escape (tmp, "$LABEL", label);
+      tmp = udisks_daemon_util_subst_str_and_escape (fs_info->command_change_label, "$DEVICE", udisks_block_get_device (block));
+      command = udisks_daemon_util_subst_str_and_escape (tmp, "$LABEL", label);
       g_free (tmp);
     }
 
-  job = udisks_daemon_launch_spawned_job (daemon,
-                                          object,
-                                          "filesystem-modify", caller_uid,
-                                          NULL, /* cancellable */
-                                          0,    /* uid_t run_as_uid */
-                                          0,    /* uid_t run_as_euid */
-                                          NULL, /* input_string */
-                                          "%s", command);
-  g_signal_connect (job,
-                    "completed",
-                    G_CALLBACK (on_set_label_job_completed),
-                    invocation);
+  success = udisks_daemon_launch_spawned_job_sync (daemon,
+                                                   object,
+                                                   "filesystem-modify", caller_uid,
+                                                   NULL, /* cancellable */
+                                                   0,    /* uid_t run_as_uid */
+                                                   0,    /* uid_t run_as_euid */
+                                                   &status,
+                                                   &out_message,
+                                                   NULL, /* input_string */
+                                                   "%s", command);
+
+  /* XXX: label property is automatically updated after an udev change
+   * event for this device, but udev sometimes returns the old label
+   * so just trigger the uevent again now to be sure the property
+   * has been updated
+  */
+  udisks_linux_block_object_trigger_uevent (UDISKS_LINUX_BLOCK_OBJECT (object));
+
+  if (success)
+    udisks_filesystem_complete_set_label (filesystem, invocation);
+  else
+    g_dbus_method_invocation_return_error (invocation,
+                                           UDISKS_ERROR,
+                                           UDISKS_ERROR_FAILED,
+                                           "Error setting label: %s",
+                                           out_message);
 
  out:
   /* for some FSes we need to copy and modify label; free our copy */
   g_free (real_label);
   g_free (command);
   g_clear_object (&object);
+  g_free (out_message);
   return TRUE; /* returning TRUE means that we handled the method invocation */
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+/* runs in thread dedicated to handling method call */
+static gboolean
+handle_resize (UDisksFilesystem      *filesystem,
+               GDBusMethodInvocation *invocation,
+               guint64                size,
+               GVariant              *options)
+{
+  UDisksBlock *block = NULL;
+  UDisksObject *object = NULL;
+  UDisksDaemon *daemon = NULL;
+  const gchar *probed_fs_usage = NULL;
+  const gchar *probed_fs_type = NULL;
+  BDFsResizeFlags mode = 0;
+  const gchar *action_id = NULL;
+  const gchar *message = NULL;
+  uid_t caller_uid;
+  gid_t caller_gid;
+  GError *error = NULL;
+  UDisksBaseJob *job = NULL;
+  gchar *required_utility = NULL;
+  const gchar * const *existing_mount_points = NULL;
+
+  g_mutex_lock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+
+  object = udisks_daemon_util_dup_object (filesystem, &error);
+  if (object == NULL)
+    {
+      g_dbus_method_invocation_take_error (invocation, error);
+      goto out;
+    }
+
+  daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
+  block = udisks_object_peek_block (object);
+
+  if (! udisks_daemon_util_get_caller_uid_sync (daemon,
+                                                invocation,
+                                                NULL /* GCancellable */,
+                                                &caller_uid,
+                                                &caller_gid,
+                                                NULL,
+                                                &error))
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      goto out;
+    }
+
+  probed_fs_usage = udisks_block_get_id_usage (block);
+  if (g_strcmp0 (probed_fs_usage, "filesystem") != 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot resize %s filesystem on %s",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+      goto out;
+    }
+
+  probed_fs_type = udisks_block_get_id_type (block);
+  if (! bd_fs_can_resize (probed_fs_type, &mode, &required_utility, &error))
+  {
+    if (error != NULL)
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Cannot resize %s filesystem on %s: %s",
+                                             probed_fs_type,
+                                             udisks_block_get_device (block),
+                                             error->message);
+    else
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Cannot resize %s filesystem on %s: executable %s not found",
+                                             probed_fs_type,
+                                             udisks_block_get_device (block),
+                                             required_utility);
+    goto out;
+  }
+
+  /* it can't be known if it's shrinking or growing but check at least the mount state */
+  existing_mount_points = udisks_filesystem_get_mount_points (filesystem);
+  if (existing_mount_points != NULL && g_strv_length ((gchar **) existing_mount_points) > 0)
+    {
+      if (! (mode & BD_FS_ONLINE_SHRINK) && ! (mode & BD_FS_ONLINE_GROW))
+        g_dbus_method_invocation_return_error (invocation,
+                                               UDISKS_ERROR,
+                                               UDISKS_ERROR_NOT_SUPPORTED,
+                                               "Cannot resize %s filesystem on %s if mounted",
+                                               probed_fs_usage,
+                                               udisks_block_get_device (block));
+    }
+  else if (! (mode & BD_FS_OFFLINE_SHRINK) && ! (mode & BD_FS_OFFLINE_GROW))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot resize %s filesystem on %s if unmounted",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+    }
+
+  action_id = "org.freedesktop.udisks2.modify-device";
+  /* Translators: Shown in authentication dialog when the user
+   * requests resizing the filesystem.
+   *
+   * Do not translate $(drive), it's a placeholder and
+   * will be replaced by the name of the drive/device in question
+   */
+  message = N_("Authentication is required to resize the filesystem on $(drive)");
+  if (! udisks_daemon_util_setup_by_user (daemon, object, caller_uid))
+    {
+      if (udisks_block_get_hint_system (block))
+        {
+          action_id = "org.freedesktop.udisks2.modify-device-system";
+        }
+      else if (! udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
+        {
+          action_id = "org.freedesktop.udisks2.modify-device-other-seat";
+        }
+    }
+
+  /* Check that the user is actually authorized to resize the filesystem. */
+  if (! udisks_daemon_util_check_authorization_sync (daemon,
+                                                    object,
+                                                    action_id,
+                                                    options,
+                                                    message,
+                                                    invocation))
+    goto out;
+
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "filesystem-resize",
+                                         caller_uid,
+                                         NULL);
+  if (job == NULL)
+    {
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
+      goto out;
+    }
+
+  /* TODO: implement progress parsing for udisks_job_set_progress(_valid) */
+  if (! bd_fs_resize (udisks_block_get_device (block), size, &error))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Error resizing filesystem on %s: %s",
+                                             udisks_block_get_device (block),
+                                             error->message);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_filesystem_complete_resize (filesystem, invocation);
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+
+ out:
+  g_clear_object (&object);
+  g_free (required_utility);
+  g_clear_error (&error);
+  g_mutex_unlock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+  return TRUE; /* returning TRUE means that we handled the method invocation */
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+/* runs in thread dedicated to handling method call */
+static gboolean
+handle_repair (UDisksFilesystem      *filesystem,
+               GDBusMethodInvocation *invocation,
+               GVariant              *options)
+{
+  UDisksBlock *block = NULL;
+  UDisksObject *object = NULL;
+  UDisksDaemon *daemon = NULL;
+  const gchar *probed_fs_usage = NULL;
+  const gchar *probed_fs_type = NULL;
+  const gchar *action_id = NULL;
+  const gchar *message = NULL;
+  uid_t caller_uid;
+  gid_t caller_gid;
+  GError *error = NULL;
+  gboolean ret = FALSE;
+  UDisksBaseJob *job = NULL;
+  gchar *required_utility = NULL;
+  const gchar * const *existing_mount_points = NULL;
+
+  g_mutex_lock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+
+  object = udisks_daemon_util_dup_object (filesystem, &error);
+  if (object == NULL)
+    {
+      g_dbus_method_invocation_take_error (invocation, error);
+      goto out;
+    }
+
+  daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
+  block = udisks_object_peek_block (object);
+
+  if (! udisks_daemon_util_get_caller_uid_sync (daemon,
+                                                invocation,
+                                                NULL /* GCancellable */,
+                                                &caller_uid,
+                                                &caller_gid,
+                                                NULL,
+                                                &error))
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      goto out;
+    }
+
+  probed_fs_usage = udisks_block_get_id_usage (block);
+  if (g_strcmp0 (probed_fs_usage, "filesystem") != 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot repair %s filesystem on %s",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+      goto out;
+    }
+
+  probed_fs_type = udisks_block_get_id_type (block);
+  if (! bd_fs_can_repair (probed_fs_type, &required_utility, &error))
+  {
+    if (error != NULL)
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Cannot repair %s filesystem on %s: %s",
+                                             probed_fs_type,
+                                             udisks_block_get_device (block),
+                                             error->message);
+    else
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Cannot repair %s filesystem on %s: executable %s not found",
+                                             probed_fs_type,
+                                             udisks_block_get_device (block),
+                                             required_utility);
+    goto out;
+  }
+
+  /* check the mount state */
+  existing_mount_points = udisks_filesystem_get_mount_points (filesystem);
+  if (existing_mount_points != NULL && g_strv_length ((gchar **) existing_mount_points) > 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot repair %s filesystem on %s if mounted",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+    }
+
+  action_id = "org.freedesktop.udisks2.modify-device";
+  /* Translators: Shown in authentication dialog when the user
+   * requests resizing the filesystem.
+   *
+   * Do not translate $(drive), it's a placeholder and
+   * will be replaced by the name of the drive/device in question
+   */
+  message = N_("Authentication is required to repair the filesystem on $(drive)");
+  if (! udisks_daemon_util_setup_by_user (daemon, object, caller_uid))
+    {
+      if (udisks_block_get_hint_system (block))
+        {
+          action_id = "org.freedesktop.udisks2.modify-device-system";
+        }
+      else if (! udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
+        {
+          action_id = "org.freedesktop.udisks2.modify-device-other-seat";
+        }
+    }
+
+  /* Check that the user is actually authorized to repair the filesystem. */
+  if (! udisks_daemon_util_check_authorization_sync (daemon,
+                                                     object,
+                                                     action_id,
+                                                     options,
+                                                     message,
+                                                     invocation))
+    goto out;
+
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "filesystem-repair",
+                                         caller_uid,
+                                         NULL);
+  if (job == NULL)
+    {
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
+      goto out;
+    }
+
+  /* TODO: implement progress parsing for udisks_job_set_progress(_valid) */
+  ret = bd_fs_repair (udisks_block_get_device (block), &error);
+  if (error)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Error reparing filesystem on %s: %s",
+                                             udisks_block_get_device (block),
+                                             error->message);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_filesystem_complete_repair (filesystem, invocation, ret);
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+
+ out:
+  g_clear_object (&object);
+  g_free (required_utility);
+  g_clear_error (&error);
+  g_mutex_unlock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+  return TRUE; /* returning TRUE means that we handled the method invocation */
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+/* runs in thread dedicated to handling method call */
+static gboolean
+handle_check (UDisksFilesystem      *filesystem,
+              GDBusMethodInvocation *invocation,
+              GVariant              *options)
+{
+  UDisksBlock *block = NULL;
+  UDisksObject *object = NULL;
+  UDisksDaemon *daemon = NULL;
+  const gchar *probed_fs_usage = NULL;
+  const gchar *probed_fs_type = NULL;
+  const gchar *action_id = NULL;
+  const gchar *message = NULL;
+  uid_t caller_uid;
+  gid_t caller_gid;
+  GError *error = NULL;
+  gboolean ret = FALSE;
+  UDisksBaseJob *job = NULL;
+  gchar *required_utility = NULL;
+  const gchar * const *existing_mount_points = NULL;
+
+  g_mutex_lock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+
+  object = udisks_daemon_util_dup_object (filesystem, &error);
+  if (object == NULL)
+    {
+      g_dbus_method_invocation_take_error (invocation, error);
+      goto out;
+    }
+
+  daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
+  block = udisks_object_peek_block (object);
+
+  if (! udisks_daemon_util_get_caller_uid_sync (daemon,
+                                                invocation,
+                                                NULL /* GCancellable */,
+                                                &caller_uid,
+                                                &caller_gid,
+                                                NULL,
+                                                &error))
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      goto out;
+    }
+
+  probed_fs_usage = udisks_block_get_id_usage (block);
+  if (g_strcmp0 (probed_fs_usage, "filesystem") != 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot check %s filesystem on %s",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+      goto out;
+    }
+
+  probed_fs_type = udisks_block_get_id_type (block);
+  if (! bd_fs_can_check (probed_fs_type, &required_utility, &error))
+  {
+    if (error != NULL)
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Cannot check %s filesystem on %s: %s",
+                                             probed_fs_type,
+                                             udisks_block_get_device (block),
+                                             error->message);
+    else
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Cannot check %s filesystem on %s: executable %s not found",
+                                             probed_fs_type,
+                                             udisks_block_get_device (block),
+                                             required_utility);
+    goto out;
+  }
+
+  /* check the mount state */
+  existing_mount_points = udisks_filesystem_get_mount_points (filesystem);
+  if (existing_mount_points != NULL && g_strv_length ((gchar **) existing_mount_points) > 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot check %s filesystem on %s if mounted",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+    }
+
+  action_id = "org.freedesktop.udisks2.modify-device";
+  /* Translators: Shown in authentication dialog when the user
+   * requests resizing the filesystem.
+   *
+   * Do not translate $(drive), it's a placeholder and
+   * will be replaced by the name of the drive/device in question
+   */
+  message = N_("Authentication is required to check the filesystem on $(drive)");
+  if (! udisks_daemon_util_setup_by_user (daemon, object, caller_uid))
+    {
+      if (udisks_block_get_hint_system (block))
+        {
+          action_id = "org.freedesktop.udisks2.modify-device-system";
+        }
+      else if (! udisks_daemon_util_on_user_seat (daemon, UDISKS_OBJECT (object), caller_uid))
+        {
+          action_id = "org.freedesktop.udisks2.modify-device-other-seat";
+        }
+    }
+
+  /* Check that the user is actually authorized to check the filesystem. */
+  if (! udisks_daemon_util_check_authorization_sync (daemon,
+                                                     object,
+                                                     action_id,
+                                                     options,
+                                                     message,
+                                                     invocation))
+    goto out;
+
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "filesystem-check",
+                                         caller_uid,
+                                         NULL);
+  if (job == NULL)
+    {
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
+      goto out;
+    }
+
+  /* TODO: implement progress parsing for udisks_job_set_progress(_valid) */
+  ret = bd_fs_check (udisks_block_get_device (block), &error);
+  if (error)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Error checking filesystem on %s: %s",
+                                             udisks_block_get_device (block),
+                                             error->message);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_filesystem_complete_check (filesystem, invocation, ret);
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+
+ out:
+  g_clear_object (&object);
+  g_free (required_utility);
+  g_clear_error (&error);
+  g_mutex_unlock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+  return TRUE; /* returning TRUE means that we handled the method invocation */
+}
+
+static gboolean
+handle_take_ownership (UDisksFilesystem      *filesystem,
+                       GDBusMethodInvocation *invocation,
+                       GVariant              *options)
+{
+  UDisksBlock *block = NULL;
+  UDisksObject *object = NULL;
+  UDisksDaemon *daemon = NULL;
+  const gchar *probed_fs_usage = NULL;
+  const gchar *probed_fs_type = NULL;
+  const gchar *action_id = NULL;
+  const gchar *message = NULL;
+  const FSInfo *fs_info = NULL;
+  UDisksBaseJob *job = NULL;
+  GError *error = NULL;
+  gboolean recursive = FALSE;
+  uid_t caller_uid;
+  gid_t caller_gid;
+
+  g_variant_lookup (options, "recursive", "b", &recursive);
+
+  /* only allow a single call at a time */
+  g_mutex_lock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+
+  object = udisks_daemon_util_dup_object (filesystem, &error);
+  if (object == NULL)
+    {
+      g_dbus_method_invocation_take_error (invocation, error);
+      goto out;
+    }
+
+  block = udisks_object_peek_block (object);
+  daemon = udisks_linux_block_object_get_daemon (UDISKS_LINUX_BLOCK_OBJECT (object));
+
+  if (! udisks_daemon_util_get_caller_uid_sync (daemon,
+                                                invocation,
+                                                NULL /* GCancellable */,
+                                                &caller_uid,
+                                                &caller_gid,
+                                                NULL,
+                                                &error))
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      goto out;
+    }
+
+  probed_fs_usage = udisks_block_get_id_usage (block);
+  if (g_strcmp0 (probed_fs_usage, "filesystem") != 0)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Cannot take ownership of %s filesystem on %s",
+                                             probed_fs_usage,
+                                             udisks_block_get_device (block));
+      goto out;
+    }
+
+  probed_fs_type = udisks_block_get_id_type (block);
+  fs_info = get_fs_info (probed_fs_type);
+  if (fs_info == NULL || !fs_info->supports_owners)
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_NOT_SUPPORTED,
+                                             "Filesystem %s doesn't support ownership",
+                                             probed_fs_usage);
+      goto out;
+    }
+
+  action_id = "org.freedesktop.udisks2.filesystem-take-ownership";
+  /* Translators: Shown in authentication dialog when the user
+   * requests taking ownership of the filesystem.
+   *
+   * Do not translate $(drive), it's a placeholder and
+   * will be replaced by the name of the drive/device in question
+   */
+  message = N_("Authentication is required to change ownership of the filesystem on $(drive)");
+
+  /* Check that the user is actually authorized to check the filesystem. */
+  if (! udisks_daemon_util_check_authorization_sync (daemon,
+                                                     object,
+                                                     action_id,
+                                                     options,
+                                                     message,
+                                                     invocation))
+    goto out;
+
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "filesystem-modify",
+                                         caller_uid,
+                                         NULL);
+  if (job == NULL)
+    {
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
+      goto out;
+    }
+
+  if (! take_filesystem_ownership (udisks_block_get_device (block),
+                                   probed_fs_type,
+                                   caller_uid, caller_gid,
+                                   recursive,
+                                   &error))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             UDISKS_ERROR,
+                                             UDISKS_ERROR_FAILED,
+                                             "Error taking ownership of filesystem on %s: %s",
+                                             udisks_block_get_device (block),
+                                             error->message);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+
+  udisks_filesystem_complete_take_ownership (filesystem, invocation);
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+
+  out:
+   g_clear_object (&object);
+   g_clear_error (&error);
+   g_mutex_unlock (&UDISKS_LINUX_FILESYSTEM (filesystem)->lock);
+   return TRUE; /* returning TRUE means that we handled the method invocation */
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -2018,4 +2577,8 @@ filesystem_iface_init (UDisksFilesystemIface *iface)
   iface->handle_mount     = handle_mount;
   iface->handle_unmount   = handle_unmount;
   iface->handle_set_label = handle_set_label;
+  iface->handle_resize    = handle_resize;
+  iface->handle_repair    = handle_repair;
+  iface->handle_check     = handle_check;
+  iface->handle_take_ownership = handle_take_ownership;
 }

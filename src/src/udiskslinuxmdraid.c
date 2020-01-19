@@ -31,6 +31,9 @@
 
 #include <glib/gstdio.h>
 
+#include <blockdev/fs.h>
+#include <blockdev/mdraid.h>
+
 #include "udiskslogging.h"
 #include "udiskslinuxprovider.h"
 #include "udiskslinuxmdraidobject.h"
@@ -40,6 +43,8 @@
 #include "udisksstate.h"
 #include "udisksdaemonutil.h"
 #include "udiskslinuxdevice.h"
+#include "udiskslinuxblock.h"
+#include "udiskssimplejob.h"
 
 /**
  * SECTION:udiskslinuxmdraid
@@ -255,6 +260,18 @@ member_cmpfunc (GVariant **a,
   return slot_a - slot_b;
 }
 
+static const char *
+sync_action_to_job_id (const char *sync_action)
+{
+  if (g_strcmp0 (sync_action, "check") == 0)
+    return "mdraid-check-job";
+  else if (g_strcmp0 (sync_action, "repair") == 0)
+    return "mdraid-repair-job";
+  else if (g_strcmp0 (sync_action, "recover") == 0)
+    return "mdraid-recover-job";
+  else
+    return "mdraid-sync-job";
+}
 
 /**
  * udisks_linux_mdraid_update:
@@ -291,6 +308,7 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
   UDisksDaemon *daemon = NULL;
   gboolean has_redundancy = FALSE;
   gboolean has_stripes = FALSE;
+  UDisksBaseJob *job = NULL;
 
   daemon = udisks_linux_mdraid_object_get_daemon (object);
 
@@ -312,17 +330,33 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
     {
       device = UDISKS_LINUX_DEVICE (member_devices->data);
       num_devices = g_udev_device_get_property_as_int (device->udev_device, "UDISKS_MD_MEMBER_DEVICES");
+      if (! num_devices)
+          num_devices = g_udev_device_get_property_as_int (device->udev_device, "STORAGED_MD_MEMBER_DEVICES");
       level = g_udev_device_get_property (device->udev_device, "UDISKS_MD_MEMBER_LEVEL");
+      if (! level)
+          level = g_udev_device_get_property (device->udev_device, "STORAGED_MD_MEMBER_LEVEL");
       uuid = g_udev_device_get_property (device->udev_device, "UDISKS_MD_MEMBER_UUID");
+      if (! uuid)
+          uuid = g_udev_device_get_property (device->udev_device, "STORAGED_MD_MEMBER_UUID");
       name = g_udev_device_get_property (device->udev_device, "UDISKS_MD_MEMBER_NAME");
+      if (! name)
+          name = g_udev_device_get_property (device->udev_device, "STORAGED_MD_MEMBER_NAME");
     }
   else
     {
       device = UDISKS_LINUX_DEVICE (raid_device);
       num_devices = g_udev_device_get_property_as_int (device->udev_device, "UDISKS_MD_DEVICES");
+      if (! num_devices)
+          num_devices = g_udev_device_get_property_as_int (device->udev_device, "STORAGED_MD_DEVICES");
       level = g_udev_device_get_property (device->udev_device, "UDISKS_MD_LEVEL");
+      if (! level)
+          level = g_udev_device_get_property (device->udev_device, "STORAGED_MD_LEVEL");
       uuid = g_udev_device_get_property (device->udev_device, "UDISKS_MD_UUID");
+      if (! uuid)
+          uuid = g_udev_device_get_property (device->udev_device, "STORAGED_MD_UUID");
       name = g_udev_device_get_property (device->udev_device, "UDISKS_MD_NAME");
+      if (! name)
+          name = g_udev_device_get_property (device->udev_device, "STORAGED_MD_NAME");
     }
 
   /* figure out size */
@@ -340,6 +374,8 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
   udisks_mdraid_set_level (iface, level);
   udisks_mdraid_set_num_devices (iface, num_devices);
   udisks_mdraid_set_size (iface, size);
+
+  udisks_mdraid_set_running (iface, raid_device != NULL);
 
   if (g_strcmp0 (level, "raid1") == 0 ||
       g_strcmp0 (level, "raid4") == 0 ||
@@ -399,6 +435,46 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
         {
           guint64 num_bytes_remaining = (num_sectors - completed_sectors) * 512ULL;
           sync_remaining_time = ((guint64) G_USEC_PER_SEC) * num_bytes_remaining / sync_rate;
+        }
+    }
+
+  if (sync_action)
+    {
+      if (g_strcmp0 (sync_action, "idle") != 0)
+        {
+          if (! udisks_linux_mdraid_object_has_sync_job (object))
+            {
+              /* Launch a job */
+              job = udisks_daemon_launch_simple_job (daemon,
+                                                     UDISKS_OBJECT (object),
+                                                     sync_action_to_job_id (sync_action),
+                                                     0,
+                                                     NULL /* cancellable */);
+
+              /* Mark the job as not cancellable. It simply has to finish... */
+              udisks_job_set_cancelable (UDISKS_JOB (job), FALSE);
+              udisks_linux_mdraid_object_set_sync_job (object, job);
+            }
+          else
+            job = udisks_linux_mdraid_object_get_sync_job (object);
+
+          /* Update the job's interface */
+          udisks_job_set_progress (UDISKS_JOB (job), sync_completed_val);
+          udisks_job_set_progress_valid (UDISKS_JOB (job), TRUE);
+          udisks_job_set_rate (UDISKS_JOB (job), sync_rate);
+
+          udisks_job_set_expected_end_time (UDISKS_JOB (job),
+                                            g_get_real_time () + sync_remaining_time);
+        }
+      else
+        {
+          if (udisks_linux_mdraid_object_has_sync_job (object))
+            {
+              /* Complete the job */
+              udisks_linux_mdraid_object_complete_sync_job (object,
+                                                            TRUE,
+                                                            "Finished");
+            }
         }
     }
   udisks_mdraid_set_sync_completed (iface, sync_completed_val);
@@ -476,6 +552,12 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
                   g_strstrip (member_state);
                   member_state_elements = g_strsplit (member_state, ",", 0);
                 }
+              else
+                {
+                  // g_variant_new() doesn't like NULL pointers for empty
+                  // arrays
+                  member_state_elements = g_new0 (gchar*, 1);
+                }
 
               snprintf (buf, sizeof (buf), "md/%s/slot", file_name);
               member_slot = read_sysfs_attr (raid_device->udev_device, buf);
@@ -520,6 +602,10 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
 
     }
   udisks_mdraid_set_active_devices (iface, g_variant_builder_end (&builder));
+
+  udisks_mdraid_set_child_configuration (iface,
+                                         udisks_linux_find_child_configuration (daemon,
+                                                                                uuid));
 
  out:
   g_free (sync_completed);
@@ -583,12 +669,12 @@ handle_start (UDisksMDRaid           *_mdraid,
   gchar *raid_device_file = NULL;
   GError *error = NULL;
   gchar *error_message = NULL;
-  gchar *escaped_uuid = NULL;
   gboolean opt_start_degraded = FALSE;
   struct stat statbuf;
   dev_t raid_device_num;
   UDisksObject *block_object = NULL;
   UDisksBlock *block = NULL;
+  UDisksBaseJob *job = NULL;
 
   object = udisks_daemon_util_dup_object (mdraid, &error);
   if (object == NULL)
@@ -612,7 +698,7 @@ handle_start (UDisksMDRaid           *_mdraid,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -646,28 +732,28 @@ handle_start (UDisksMDRaid           *_mdraid,
                                                     invocation))
     goto out;
 
-  escaped_uuid = udisks_daemon_util_escape_and_quote (udisks_mdraid_get_uuid (UDISKS_MDRAID (mdraid)));
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "md-raid-start",
+                                         caller_uid,
+                                         NULL);
 
-  if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                              UDISKS_OBJECT (object),
-                                              "md-raid-start", caller_uid,
-                                              NULL, /* GCancellable */
-                                              0,    /* uid_t run_as_uid */
-                                              0,    /* uid_t run_as_euid */
-                                              NULL, /* gint *out_status */
-                                              &error_message,
-                                              NULL,  /* input_string */
-                                              "mdadm --assemble%s --scan --uuid %s",
-                                              opt_start_degraded ? " --run" : " ",
-                                              escaped_uuid))
+  if (job == NULL)
     {
-      g_dbus_method_invocation_return_error (invocation,
-                                             UDISKS_ERROR,
-                                             UDISKS_ERROR_FAILED,
-                                             "Error starting RAID array: %s",
-                                             error_message);
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
       goto out;
     }
+
+  if (!bd_md_activate (NULL, NULL, udisks_mdraid_get_uuid (UDISKS_MDRAID (mdraid)), opt_start_degraded, NULL, &error))
+    {
+      g_prefix_error (&error, "Error starting RAID array:");
+      g_dbus_method_invocation_take_error (invocation, error);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
 
   /* ... then, sit and wait for MD block device to show up */
   block_object = udisks_daemon_wait_for_object_sync (daemon,
@@ -730,7 +816,6 @@ handle_start (UDisksMDRaid           *_mdraid,
   g_list_free_full (member_devices, g_object_unref);
   g_free (error_message);
   g_free (raid_device_file);
-  g_free (escaped_uuid);
   g_clear_object (&raid_device);
   g_clear_object (&object);
   return TRUE; /* returning TRUE means that we handled the method invocation */
@@ -739,9 +824,10 @@ handle_start (UDisksMDRaid           *_mdraid,
 /* ---------------------------------------------------------------------------------------------------- */
 
 static gboolean
-handle_stop (UDisksMDRaid           *_mdraid,
-             GDBusMethodInvocation  *invocation,
-             GVariant               *options)
+udisks_linux_mdraid_stop (UDisksMDRaid           *_mdraid,
+                          GDBusMethodInvocation  *invocation,
+                          GVariant               *options,
+                          GError                **error)
 {
   UDisksLinuxMDRaid *mdraid = UDISKS_LINUX_MDRAID (_mdraid);
   UDisksDaemon *daemon;
@@ -751,40 +837,40 @@ handle_stop (UDisksMDRaid           *_mdraid,
   uid_t caller_uid;
   gid_t caller_gid;
   UDisksLinuxDevice *raid_device = NULL;
+  UDisksBaseJob *job = NULL;
   const gchar *device_file = NULL;
-  gchar *escaped_device_file = NULL;
-  GError *error = NULL;
-  gchar *error_message = NULL;
+  gboolean ret;
 
-  object = udisks_daemon_util_dup_object (mdraid, &error);
+  object = udisks_daemon_util_dup_object (mdraid, error);
   if (object == NULL)
     {
-      g_dbus_method_invocation_take_error (invocation, error);
+      ret = FALSE;
       goto out;
     }
 
   daemon = udisks_linux_mdraid_object_get_daemon (object);
   state = udisks_daemon_get_state (daemon);
 
-  error = NULL;
   if (!udisks_daemon_util_get_caller_uid_sync (daemon,
                                                invocation,
                                                NULL /* GCancellable */,
                                                &caller_uid,
                                                &caller_gid,
                                                NULL,
-                                               &error))
+                                               error))
     {
-      g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      ret = FALSE;
       goto out;
     }
 
   raid_device = udisks_linux_mdraid_object_get_device (object);
   if (raid_device == NULL)
     {
-      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
-                                             "RAID Array is not running");
+      g_set_error (error,
+                   UDISKS_ERROR,
+                   UDISKS_ERROR_FAILED,
+                   "RAID Array is not running");
+      ret = FALSE;
       goto out;
     }
 
@@ -807,47 +893,69 @@ handle_stop (UDisksMDRaid           *_mdraid,
       /* TODO: variables */
       message = N_("Authentication is required to stop a RAID array");
       action_id = "org.freedesktop.udisks2.manage-md-raid";
-      if (!udisks_daemon_util_check_authorization_sync (daemon,
-                                                        UDISKS_OBJECT (object),
-                                                        action_id,
-                                                        options,
-                                                        message,
-                                                        invocation))
-        goto out;
+      if (!udisks_daemon_util_check_authorization_sync_with_error (daemon,
+                                                                   UDISKS_OBJECT (object),
+                                                                   action_id,
+                                                                   options,
+                                                                   message,
+                                                                   invocation,
+                                                                   error))
+        {
+          ret = FALSE;
+          goto out;
+        }
     }
 
   device_file = g_udev_device_get_device_file (raid_device->udev_device);
-  escaped_device_file = udisks_daemon_util_escape_and_quote (g_udev_device_get_device_file (raid_device->udev_device));
 
-  if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                              UDISKS_OBJECT (object),
-                                              "md-raid-stop", caller_uid,
-                                              NULL, /* GCancellable */
-                                              0,    /* uid_t run_as_uid */
-                                              0,    /* uid_t run_as_euid */
-                                              NULL, /* gint *out_status */
-                                              &error_message,
-                                              NULL,  /* input_string */
-                                              "mdadm --stop %s",
-                                              escaped_device_file))
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "md-raid-stop",
+                                         caller_uid,
+                                         NULL);
+
+  if (job == NULL)
     {
-      g_dbus_method_invocation_return_error (invocation,
-                                             UDISKS_ERROR,
-                                             UDISKS_ERROR_FAILED,
-                                             "Error stopping RAID array %s: %s",
-                                             device_file,
-                                             error_message);
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
+      ret = FALSE;
       goto out;
     }
 
-  udisks_mdraid_complete_stop (_mdraid, invocation);
+  if (!bd_md_deactivate (device_file, error))
+    {
+      g_prefix_error (error, "Error stopping RAID array %s:", device_file);
+      g_dbus_method_invocation_take_error (invocation, *error);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, (*error)->message);
+      ret = FALSE;
+      goto out;
+    }
+
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
+  ret = TRUE;
 
  out:
-  g_free (error_message);
-  g_free (escaped_device_file);
   g_clear_object (&raid_device);
   g_clear_object (&object);
-  return TRUE; /* returning TRUE means that we handled the method invocation */
+  return ret;
+}
+
+static gboolean
+handle_stop (UDisksMDRaid          *_mdraid,
+             GDBusMethodInvocation *invocation,
+             GVariant              *options)
+{
+  GError *error = NULL;
+
+  if (!udisks_linux_mdraid_stop (_mdraid,
+                                   invocation,
+                                   options,
+                                   &error))
+    g_dbus_method_invocation_take_error (invocation, error);
+  else
+    udisks_mdraid_complete_stop (_mdraid, invocation);
+
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -928,15 +1036,14 @@ handle_remove_device (UDisksMDRaid           *_mdraid,
   gid_t caller_gid;
   UDisksLinuxDevice *raid_device = NULL;
   const gchar *device_file = NULL;
-  gchar *escaped_device_file = NULL;
   const gchar *member_device_file = NULL;
-  gchar *escaped_member_device_file = NULL;
   GError *error = NULL;
-  gchar *error_message = NULL;
   UDisksObject *member_device_object = NULL;
   UDisksBlock *member_device = NULL;
+  UDisksBaseJob *job = NULL;
   gchar **member_states = NULL;
   gboolean opt_wipe = FALSE;
+  gboolean set_faulty = FALSE;
 
   object = udisks_daemon_util_dup_object (mdraid, &error);
   if (object == NULL)
@@ -960,7 +1067,7 @@ handle_remove_device (UDisksMDRaid           *_mdraid,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1022,82 +1129,45 @@ handle_remove_device (UDisksMDRaid           *_mdraid,
     }
 
   device_file = g_udev_device_get_device_file (raid_device->udev_device);
-  escaped_device_file = udisks_daemon_util_escape_and_quote (device_file);
 
   member_device_file = udisks_block_get_device (member_device);
-  escaped_member_device_file = udisks_daemon_util_escape_and_quote (member_device_file);
 
   /* if necessary, mark as faulty first */
   if (has_state (member_states, "in_sync"))
+    set_faulty = TRUE;
+
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "md-raid-remove-device",
+                                         caller_uid,
+                                         NULL);
+
+  if (job == NULL)
     {
-      if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                                  UDISKS_OBJECT (object),
-                                                  "md-raid-fault-device", caller_uid,
-                                                  NULL, /* GCancellable */
-                                                  0,    /* uid_t run_as_uid */
-                                                  0,    /* uid_t run_as_euid */
-                                                  NULL, /* gint *out_status */
-                                                  &error_message,
-                                                  NULL,  /* input_string */
-                                                  "mdadm --manage %s --set-faulty %s",
-                                                  escaped_device_file,
-                                                  escaped_member_device_file))
-        {
-          g_dbus_method_invocation_return_error (invocation,
-                                                 UDISKS_ERROR,
-                                                 UDISKS_ERROR_FAILED,
-                                                 "Error marking %s as faulty in RAID array %s: %s",
-                                                 member_device_file,
-                                                 device_file,
-                                                 error_message);
-          goto out;
-        }
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
+      goto out;
     }
 
-  if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                              UDISKS_OBJECT (object),
-                                              "md-raid-remove-device", caller_uid,
-                                              NULL, /* GCancellable */
-                                              0,    /* uid_t run_as_uid */
-                                              0,    /* uid_t run_as_euid */
-                                              NULL, /* gint *out_status */
-                                              &error_message,
-                                              NULL,  /* input_string */
-                                              "mdadm --manage %s --remove %s",
-                                              escaped_device_file,
-                                              escaped_member_device_file))
-        {
-          g_dbus_method_invocation_return_error (invocation,
-                                                 UDISKS_ERROR,
-                                                 UDISKS_ERROR_FAILED,
-                                                 "Error removing %s from RAID array %s: %s",
-                                                 member_device_file,
-                                                 device_file,
-                                                 error_message);
-          goto out;
-        }
+  if (!bd_md_remove (device_file, member_device_file, set_faulty, NULL, &error))
+    {
+      g_prefix_error (&error, "Error removing %s from RAID array %s:", device_file, member_device_file);
+      g_dbus_method_invocation_take_error (invocation, error);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
 
   if (opt_wipe)
     {
-      if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                                  UDISKS_OBJECT (member_device_object),
-                                                  "format-erase", caller_uid,
-                                                  NULL, /* GCancellable */
-                                                  0,    /* uid_t run_as_uid */
-                                                  0,    /* uid_t run_as_euid */
-                                                  NULL, /* gint *out_status */
-                                                  &error_message,
-                                                  NULL,  /* input_string */
-                                                  "wipefs -a %s",
-                                                  escaped_member_device_file))
+      if (!bd_fs_wipe (member_device_file, TRUE, &error))
         {
-          g_dbus_method_invocation_return_error (invocation,
-                                                 UDISKS_ERROR,
-                                                 UDISKS_ERROR_FAILED,
-                                                 "Error wiping  %s after removal from RAID array %s: %s",
-                                                 member_device_file,
-                                                 device_file,
-                                                 error_message);
+          g_prefix_error (&error,
+                          "Error wiping  %s after removal from RAID array %s:",
+                          member_device_file,
+                          device_file);
+          g_dbus_method_invocation_take_error (invocation, error);
           goto out;
         }
     }
@@ -1105,9 +1175,6 @@ handle_remove_device (UDisksMDRaid           *_mdraid,
   udisks_mdraid_complete_remove_device (_mdraid, invocation);
 
  out:
-  g_free (error_message);
-  g_free (escaped_device_file);
-  g_free (escaped_member_device_file);
   g_free (member_states);
   g_clear_object (&member_device_object);
   g_clear_object (&member_device);
@@ -1135,13 +1202,11 @@ handle_add_device (UDisksMDRaid           *_mdraid,
   gid_t caller_gid;
   UDisksLinuxDevice *raid_device = NULL;
   const gchar *device_file = NULL;
-  gchar *escaped_device_file = NULL;
   const gchar *new_member_device_file = NULL;
-  gchar *escaped_new_member_device_file = NULL;
   GError *error = NULL;
-  gchar *error_message = NULL;
   UDisksObject *new_member_device_object = NULL;
   UDisksBlock *new_member_device = NULL;
+  UDisksBaseJob *job = NULL;
 
   object = udisks_daemon_util_dup_object (mdraid, &error);
   if (object == NULL)
@@ -1163,7 +1228,7 @@ handle_add_device (UDisksMDRaid           *_mdraid,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1218,40 +1283,33 @@ handle_add_device (UDisksMDRaid           *_mdraid,
     }
 
   device_file = g_udev_device_get_device_file (raid_device->udev_device);
-  escaped_device_file = udisks_daemon_util_escape_and_quote (device_file);
-
   new_member_device_file = udisks_block_get_device (new_member_device);
-  escaped_new_member_device_file = udisks_daemon_util_escape_and_quote (new_member_device_file);
 
-  if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                              UDISKS_OBJECT (object),
-                                              "md-raid-add-device", caller_uid,
-                                              NULL, /* GCancellable */
-                                              0,    /* uid_t run_as_uid */
-                                              0,    /* uid_t run_as_euid */
-                                              NULL, /* gint *out_status */
-                                              &error_message,
-                                              NULL,  /* input_string */
-                                              "mdadm --manage %s --add %s",
-                                              escaped_device_file,
-                                              escaped_new_member_device_file))
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "md-raid-add-device",
+                                         caller_uid,
+                                         NULL);
+
+  if (job == NULL)
     {
-      g_dbus_method_invocation_return_error (invocation,
-                                             UDISKS_ERROR,
-                                             UDISKS_ERROR_FAILED,
-                                             "Error adding %s to RAID array %s: %s",
-                                             new_member_device_file,
-                                             device_file,
-                                             error_message);
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
       goto out;
     }
 
+  if (!bd_md_add (device_file, new_member_device_file, 0, NULL, &error))
+    {
+      g_prefix_error (&error, "Error adding %s to RAID array %s:", device_file, new_member_device_file);
+      g_dbus_method_invocation_take_error (invocation, error);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
   udisks_mdraid_complete_add_device (_mdraid, invocation);
 
  out:
-  g_free (error_message);
-  g_free (escaped_device_file);
-  g_free (escaped_new_member_device_file);
   g_clear_object (&new_member_device_object);
   g_clear_object (&new_member_device);
   g_clear_object (&raid_device);
@@ -1278,9 +1336,8 @@ handle_set_bitmap_location (UDisksMDRaid           *_mdraid,
   gid_t caller_gid;
   UDisksLinuxDevice *raid_device = NULL;
   const gchar *device_file = NULL;
-  gchar *escaped_device_file = NULL;
   GError *error = NULL;
-  gchar *error_message = NULL;
+  UDisksBaseJob *job = NULL;
 
   object = udisks_daemon_util_dup_object (mdraid, &error);
   if (object == NULL)
@@ -1302,7 +1359,7 @@ handle_set_bitmap_location (UDisksMDRaid           *_mdraid,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1348,35 +1405,33 @@ handle_set_bitmap_location (UDisksMDRaid           *_mdraid,
     }
 
   device_file = g_udev_device_get_device_file (raid_device->udev_device);
-  escaped_device_file = udisks_daemon_util_escape_and_quote (device_file);
 
-  if (!udisks_daemon_launch_spawned_job_sync (daemon,
-                                              UDISKS_OBJECT (object),
-                                              "md-raid-set-bitmap", caller_uid,
-                                              NULL, /* GCancellable */
-                                              0,    /* uid_t run_as_uid */
-                                              0,    /* uid_t run_as_euid */
-                                              NULL, /* gint *out_status */
-                                              &error_message,
-                                              NULL,  /* input_string */
-                                              "mdadm --grow %s --bitmap %s",
-                                              escaped_device_file,
-                                              value))
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         "md-raid-set-bitmap",
+                                         caller_uid,
+                                         NULL);
+
+  if (job == NULL)
     {
-      g_dbus_method_invocation_return_error (invocation,
-                                             UDISKS_ERROR,
-                                             UDISKS_ERROR_FAILED,
-                                             "Error setting bitmap on RAID array %s: %s",
-                                             device_file,
-                                             error_message);
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
       goto out;
     }
 
+  if (!bd_md_set_bitmap_location (device_file, value, &error))
+    {
+      g_prefix_error (&error, "Error setting bitmap on RAID array %s: ", device_file);
+      g_dbus_method_invocation_take_error (invocation, error);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
+    }
+
+  udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), TRUE, NULL);
   udisks_mdraid_complete_add_device (_mdraid, invocation);
+  udisks_linux_mdraid_update (mdraid, object);
 
  out:
-  g_free (error_message);
-  g_free (escaped_device_file);
   g_clear_object (&raid_device);
   g_clear_object (&object);
   return TRUE; /* returning TRUE means that we handled the method invocation */
@@ -1401,8 +1456,8 @@ handle_request_sync_action (UDisksMDRaid           *_mdraid,
   gid_t caller_gid;
   UDisksLinuxDevice *raid_device = NULL;
   GError *error = NULL;
-  gchar *sync_action_path = NULL;
-  FILE *f;
+  const gchar *device_file = NULL;
+  UDisksBaseJob *job = NULL;
 
   object = udisks_daemon_util_dup_object (mdraid, &error);
   if (object == NULL)
@@ -1424,7 +1479,7 @@ handle_request_sync_action (UDisksMDRaid           *_mdraid,
                                                &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -1471,39 +1526,198 @@ handle_request_sync_action (UDisksMDRaid           *_mdraid,
         goto out;
     }
 
-  sync_action_path = g_strdup_printf ("%s/md/sync_action", g_udev_device_get_sysfs_path (raid_device->udev_device));
-  f = fopen (sync_action_path, "w");
-  if (f == NULL)
+  device_file = g_udev_device_get_device_file (raid_device->udev_device);
+
+  job = udisks_daemon_launch_simple_job (daemon,
+                                         UDISKS_OBJECT (object),
+                                         sync_action_to_job_id (sync_action),
+                                         caller_uid,
+                                         NULL);
+
+  if (job == NULL)
     {
-      g_dbus_method_invocation_return_error (invocation,
-                                             UDISKS_ERROR,
-                                             UDISKS_ERROR_FAILED,
-                                             "Error opening %s: %m",
-                                             sync_action_path);
+      g_dbus_method_invocation_return_error (invocation, UDISKS_ERROR, UDISKS_ERROR_FAILED,
+                                             "Failed to create a job object");
       goto out;
     }
-  else
+
+  if (!bd_md_request_sync_action (device_file, sync_action, &error))
     {
-      if (fwrite (sync_action, 1, strlen (sync_action), f) != strlen (sync_action))
-        {
-          g_dbus_method_invocation_return_error (invocation,
-                                                 UDISKS_ERROR,
-                                                 UDISKS_ERROR_FAILED,
-                                                 "Error writing to sysfs file %s: %m",
-                                                 sync_action_path);
-          fclose (f);
-          goto out;
-        }
+      g_prefix_error (&error, "Error requesting '%s' action on RAID array '%s': ", sync_action, device_file);
+      g_dbus_method_invocation_take_error (invocation, error);
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (job), FALSE, error->message);
+      goto out;
     }
-  fclose (f);
 
   udisks_mdraid_complete_request_sync_action (_mdraid, invocation);
 
  out:
-  g_free (sync_action_path);
   g_clear_object (&raid_device);
   g_clear_object (&object);
   return TRUE; /* returning TRUE means that we handled the method invocation */
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+static gboolean
+udisks_linux_mdraid_delete (UDisksMDRaid           *mdraid,
+                            GDBusMethodInvocation  *invocation,
+                            GVariant               *options,
+                            GError                **error)
+{
+  UDisksLinuxMDRaidObject *object;
+  UDisksDaemon *daemon;
+  uid_t caller_uid;
+  gid_t caller_gid;
+  const gchar *message;
+  const gchar *action_id;
+  gboolean teardown_flag = FALSE;
+  GList *member_devices = NULL;
+  GList *l;
+  UDisksLinuxDevice *raid_device = NULL;
+  gboolean ret;
+
+  g_variant_lookup (options, "tear-down", "b", &teardown_flag);
+
+  /* Delete is just stop followed by wiping of all members.
+   */
+
+  object = udisks_daemon_util_dup_object (mdraid, error);
+  if (object == NULL)
+    {
+      ret = FALSE;
+      goto out;
+    }
+
+  daemon = udisks_linux_mdraid_object_get_daemon (object);
+
+  if (!udisks_daemon_util_get_caller_uid_sync (daemon,
+                                               invocation,
+                                               NULL /* GCancellable */,
+                                               &caller_uid,
+                                               &caller_gid,
+                                               NULL,
+                                               error))
+    {
+      ret = FALSE;
+      goto out;
+    }
+
+  message = N_("Authentication is required to delete a RAID array");
+  action_id = "org.freedesktop.udisks2.manage-md-raid";
+  if (!udisks_daemon_util_check_authorization_sync_with_error (daemon,
+                                                               NULL,
+                                                               action_id,
+                                                               options,
+                                                               message,
+                                                               invocation,
+                                                               error))
+    {
+      ret = FALSE;
+      goto out;
+    }
+
+  member_devices = udisks_linux_mdraid_object_get_members (object);
+  raid_device = udisks_linux_mdraid_object_get_device (object);
+
+  if (teardown_flag)
+    {
+      message = N_("Authentication is required to modify the system configuration");
+      action_id = "org.freedesktop.udisks2.modify-system-configuration";
+      if (!udisks_daemon_util_check_authorization_sync_with_error (daemon,
+                                                                   NULL,
+                                                                   action_id,
+                                                                   options,
+                                                                   message,
+                                                                   invocation,
+                                                                   error))
+        {
+          ret = FALSE;
+          goto out;
+        }
+
+      if (raid_device)
+        {
+          /* The array is running, teardown its block device.
+          */
+          UDisksObject *block_object =
+            udisks_daemon_find_block_by_device_file (daemon,
+                                                     g_udev_device_get_device_file (raid_device->udev_device));
+          UDisksBlock *block = block_object? udisks_object_peek_block (block_object) : NULL;
+          if (block &&
+              !udisks_linux_block_teardown (block,
+                                            invocation,
+                                            options,
+                                            error))
+            {
+              g_clear_object (&block_object);
+              ret = FALSE;
+              goto out;
+            }
+
+          g_clear_object (&block_object);
+        }
+      else
+        {
+          /* The array is not running, remove the ChildConfiguration.
+          */
+          if (!udisks_linux_remove_configuration (udisks_mdraid_get_child_configuration (mdraid),
+                                                  error))
+            {
+              ret = FALSE;
+              goto out;
+            }
+        }
+    }
+
+  if (raid_device &&
+      !udisks_linux_mdraid_stop (mdraid,
+                                 invocation,
+                                 options,
+                                 error))
+    {
+      ret = FALSE;
+      goto out;
+    }
+
+  for (l = member_devices; l; l = l->next)
+    {
+      UDisksLinuxDevice *member_device = UDISKS_LINUX_DEVICE (l->data);
+      const gchar *device = g_udev_device_get_device_file (member_device->udev_device);
+
+      if (!bd_md_destroy (device, error))
+        {
+          g_prefix_error (error, "Error wiping device %s:", device);
+          g_dbus_method_invocation_take_error (invocation, *error);
+          ret = FALSE;
+          goto out;
+        }
+    }
+
+  ret = TRUE;
+
+ out:
+  g_list_free_full (member_devices, g_object_unref);
+  g_clear_object (&raid_device);
+  return ret;
+}
+
+static gboolean
+handle_delete (UDisksMDRaid           *_mdraid,
+               GDBusMethodInvocation  *invocation,
+               GVariant               *options)
+{
+  GError *error = NULL;
+
+  if (!udisks_linux_mdraid_delete (_mdraid,
+                                     invocation,
+                                     options,
+                                     &error))
+    g_dbus_method_invocation_take_error (invocation, error);
+  else
+    udisks_mdraid_complete_delete (_mdraid, invocation);
+
+  return TRUE;
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -1517,4 +1731,5 @@ mdraid_iface_init (UDisksMDRaidIface *iface)
   iface->handle_add_device = handle_add_device;
   iface->handle_set_bitmap_location = handle_set_bitmap_location;
   iface->handle_request_sync_action = handle_request_sync_action;
+  iface->handle_delete = handle_delete;
 }

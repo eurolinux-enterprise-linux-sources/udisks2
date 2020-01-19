@@ -281,9 +281,9 @@ udisks_crypttab_monitor_constructed (GObject *object)
                                                &error);
   if (monitor->file_monitor == NULL)
     {
-      udisks_error ("Error monitoring /etc/crypttab: %s (%s, %d)",
+      udisks_critical ("Error monitoring /etc/crypttab: %s (%s, %d)",
                     error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
+      g_clear_error (&error);
     }
   else
     {
@@ -374,7 +374,7 @@ udisks_crypttab_monitor_ensure (UDisksCrypttabMonitor *monitor)
           udisks_warning ("Error opening /etc/crypttab file: %s (%s, %d)",
                           error->message, g_quark_to_string (error->domain), error->code);
         }
-      g_error_free (error);
+      g_clear_error (&error);
       goto out;
     }
 
@@ -396,7 +396,7 @@ udisks_crypttab_monitor_ensure (UDisksCrypttabMonitor *monitor)
       num_tokens = g_strv_length (tokens);
       if (num_tokens < 2)
         {
-          udisks_warning ("Line %d of /etc/crypttab only contains %d tokens", n, num_tokens);
+          udisks_warning ("Line %u of /etc/crypttab only contains %u tokens", n, num_tokens);
           goto continue_loop;
         }
 

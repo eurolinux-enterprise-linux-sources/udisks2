@@ -24,139 +24,201 @@
 #include "config.h"
 #include "udiskslinuxfsinfo.h"
 
+#define FS_EXT2      "ext2"
+#define FS_EXT3      "ext3"
+#define FS_EXT4      "ext4"
+#define FS_VFAT      "vfat"
+#define FS_NTFS      "ntfs"
+#define FS_EXFAT     "exfat"
+#define FS_XFS       "xfs"
+#define FS_REISERFS  "reiserfs"
+#define FS_NILFS2    "nilfs2"
+#define FS_BTRFS     "btrfs"
+#define FS_MINIX     "minix"
+#define FS_UDF       "udf"
+#define FS_F2FS      "f2fs"
+#define SWAP         "swap"
+#define PT_DOS       "dos"
+#define PT_GPT       "gpt"
+#define EMPTY        "empty"
+
+const gchar *_fs_names[] =
+  {
+    FS_EXT2,
+    FS_EXT3,
+    FS_EXT4,
+    FS_VFAT,
+    FS_NTFS,
+    FS_EXFAT,
+    FS_XFS,
+    FS_REISERFS,
+    FS_NILFS2,
+    FS_BTRFS,
+    FS_MINIX,
+    FS_UDF,
+    FS_F2FS,
+    SWAP,
+    NULL
+  };
+
 const FSInfo _fs_info[] =
   {
     /* filesystems */
     {
-      "ext2",
+      FS_EXT2,
       "e2label $DEVICE $LABEL",
       NULL,
       TRUE,  /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.ext2 -F -L $LABEL $DEVICE",
+      "mkfs.ext2 -n -F -L $LABEL $DEVICE",
     },
     {
-      "ext3",
+      FS_EXT3,
       "e2label $DEVICE $LABEL",
       NULL,
       TRUE,  /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.ext3 -F -L $LABEL $DEVICE",
+      "mkfs.ext3 -n -F -L $LABEL $DEVICE",
     },
     {
-      "ext4",
+      FS_EXT4,
       "e2label $DEVICE $LABEL",
       NULL,
       TRUE,  /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.ext4 -F -L $LABEL $DEVICE",
+      "mkfs.ext4 -n -F -L $LABEL $DEVICE",
     },
     {
-      "vfat",
+      FS_VFAT,
       "dosfslabel $DEVICE $LABEL",
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "mkfs.vfat -I -n $LABEL $DEVICE",
+      NULL,
     },
     {
-      "ntfs",
+      FS_NTFS,
       "ntfslabel $DEVICE $LABEL",
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "mkntfs -f -F -L $LABEL $DEVICE",
+      "mkntfs -n -f -F -L $LABEL $DEVICE",
     },
     {
-      "exfat",
+      FS_EXFAT,
       "exfatlabel $DEVICE $LABEL",
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "mkexfatfs -n $LABEL $DEVICE",
+      NULL,
     },
     {
-      "xfs",
+      FS_XFS,
       "xfs_admin -L $LABEL $DEVICE",
       "xfs_admin -L -- $DEVICE",
       FALSE, /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.xfs -f -L $LABEL $DEVICE",
+      "mkfs.xfs -N -f -L $LABEL $DEVICE"
     },
     {
-      "reiserfs",
+      FS_REISERFS,
       "reiserfstune -l $LABEL $DEVICE",
       NULL,
       FALSE, /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.reiserfs -q -l $LABEL $DEVICE",
+      NULL,
     },
     {
-      "nilfs2",
+      FS_NILFS2,
       "nilfs-tune -L $LABEL $DEVICE",
       NULL,
       FALSE, /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.nilfs2 -L $LABEL $DEVICE",
+      NULL,
     },
     {
-      "btrfs",
-      NULL,
+      FS_BTRFS,
+      "btrfs filesystem label $DEVICE $LABEL",
       NULL,
       FALSE, /* supports_online_label_rename */
       TRUE,  /* supports_owners */
       "mkfs.btrfs -L $LABEL $DEVICE",
+      NULL,
     },
     {
-      "minix",
+      FS_MINIX,
       NULL,
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "mkfs.minix $DEVICE",
+      NULL,
     },
     {
-      "udf",
+      FS_UDF,
       NULL,
       NULL,
       FALSE, /* supports_online_label_rename */
-      FALSE, /* supports_owners */
-      "mkudffs --vid $LABEL $DEVICE",
+      TRUE,  /* supports_owners */
+      "mkudffs --utf8 --media-type=hd --udfrev=0x201 --blocksize=$BLOCKSIZE --vid $LABEL --lvid $LABEL $DEVICE",
+      NULL,
+    },
+    {
+      FS_F2FS,
+      NULL,
+      NULL,
+      FALSE, /* supports_online_label_rename */
+      TRUE,  /* supports_owners */
+      "mkfs.f2fs -l $LABEL $DEVICE",
+      NULL,
     },
     /* swap space */
     {
-      "swap",
+      SWAP,
       NULL,
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "mkswap -L $LABEL $DEVICE",
+      NULL,
     },
     /* partition tables */
     {
-      "dos",
+      PT_DOS,
       NULL,
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "parted --script $DEVICE mktable msdos",
+      NULL,
     },
     {
-      "gpt",
+      PT_GPT,
       NULL,
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "parted --script $DEVICE mktable gpt",
+      NULL,
     },
     /* empty */
     {
-      "empty",
+      EMPTY,
       NULL,
       NULL,
       FALSE, /* supports_online_label_rename */
       FALSE, /* supports_owners */
       "wipefs --all $DEVICE",
+      NULL,
     },
   };
 
@@ -183,4 +245,16 @@ get_fs_info (const gchar *fstype)
     }
 
   return NULL;
+}
+
+/**
+ * get_supported_filesystems:
+ *
+ * Returns: a NULL terminated list of supported filesystems. Do not free or
+ * modify.
+ */
+const gchar **
+get_supported_filesystems (void)
+{
+  return _fs_names;
 }

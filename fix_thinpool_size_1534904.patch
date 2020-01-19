@@ -1,0 +1,34 @@
+From 34bf5d61e5ea1bd9450db6197fc9791a8e7aa8da Mon Sep 17 00:00:00 2001
+From: Marius Vollmer <mvollmer@redhat.com>
+Date: Wed, 13 Dec 2017 15:28:23 +0200
+Subject: [PATCH] lvm2: Don't match prefixes in cmp_int_lv_name
+
+Once the whole internal name has matched, the other name must also be
+at the end.  Otherwise we might find "lvol0" when looking for
+"lvol0_meta", for example.
+
+The symptom is that the size of a pool is reported as twice its data
+size, instead of data plus metadata size, which funnily is exactly the
+same symptom fixed by 043edcb.  Deja vu...
+
+(cherry picked from commit 821bc20911e9a446b943cf40abe0e8a8132bf418)
+---
+ modules/lvm2/udiskslinuxvolumegroupobject.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/modules/lvm2/udiskslinuxvolumegroupobject.c b/modules/lvm2/udiskslinuxvolumegroupobject.c
+index 617af04..3f622a6 100644
+--- a/modules/lvm2/udiskslinuxvolumegroupobject.c
++++ b/modules/lvm2/udiskslinuxvolumegroupobject.c
+@@ -530,7 +530,7 @@ cmp_int_lv_name (const gchar *int_lv_name, const gchar *lv_name)
+ 
+   if (*c == ']')
+     c++;
+-  if (*c == '\0')
++  if (*c == '\0' && lv_name[c - int_lv_name] == '\0')
+     return TRUE;
+ 
+   return FALSE;
+-- 
+1.8.3.1
+

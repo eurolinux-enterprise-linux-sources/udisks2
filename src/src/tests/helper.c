@@ -32,8 +32,6 @@ main (int argc, char *argv[])
 {
   gint ret;
 
-  g_type_init ();
-
   ret = 1;
 
   g_assert_cmpint (argc, ==, 2);
@@ -100,6 +98,20 @@ main (int argc, char *argv[])
           g_string_append_c (s, c);
         g_print ("Woah, you said `%s', partner!\n", s->str);
         g_string_free (s, TRUE);
+        ret = 0;
+      }
+      break;
+
+    case 8:
+      /* read from stdin.. echo back the hex codes */
+      {
+        gint c;
+
+        g_print ("Woah, you said `");
+        while ((c = fgetc (stdin)) != EOF) {
+          g_print ("%02x", c);
+        }
+        g_print ("', partner!\n");
         ret = 0;
       }
       break;

@@ -33,6 +33,7 @@
 #include "udiskslinuxmdraid.h"
 #include "udiskslinuxblockobject.h"
 #include "udiskslinuxdevice.h"
+#include "udiskssimplejob.h"
 
 /**
  * SECTION:udiskslinuxmdraidobject
@@ -71,6 +72,10 @@ struct _UDisksLinuxMDRaidObject
   /* watches for sysfs attr changes */
   GSource *sync_action_source;
   GSource *degraded_source;
+
+  /* sync job */
+  UDisksBaseJob *sync_job;
+  GMutex sync_job_mutex;
 };
 
 struct _UDisksLinuxMDRaidObjectClass
@@ -83,6 +88,7 @@ enum
   PROP_0,
   PROP_UUID,
   PROP_DAEMON,
+  PROP_SYNC_JOB,
 };
 
 static void
@@ -175,6 +181,8 @@ udisks_linux_mdraid_object_set_property (GObject      *__object,
 static void
 udisks_linux_mdraid_object_init (UDisksLinuxMDRaidObject *object)
 {
+  g_mutex_init (&object->sync_job_mutex);
+  object->sync_job = NULL;
 }
 
 static void
@@ -340,14 +348,14 @@ udisks_linux_mdraid_object_get_device (UDisksLinuxMDRaidObject   *object)
 
 /* ---------------------------------------------------------------------------------------------------- */
 
-typedef gboolean (*HasInterfaceFunc)    (UDisksLinuxMDRaidObject     *object);
-typedef void     (*ConnectInterfaceFunc) (UDisksLinuxMDRaidObject    *object);
-typedef gboolean (*UpdateInterfaceFunc) (UDisksLinuxMDRaidObject     *object,
-                                         const gchar    *uevent_action,
-                                         GDBusInterface *interface);
+typedef gboolean (*HasInterfaceFunc)     (UDisksLinuxMDRaidObject *object);
+typedef void     (*ConnectInterfaceFunc) (UDisksLinuxMDRaidObject *object);
+typedef gboolean (*UpdateInterfaceFunc)  (UDisksLinuxMDRaidObject *object,
+                                          const gchar             *uevent_action,
+                                          GDBusInterface          *interface);
 
 static gboolean
-update_iface (UDisksLinuxMDRaidObject   *object,
+update_iface (UDisksLinuxMDRaidObject  *object,
               const gchar              *uevent_action,
               HasInterfaceFunc          has_func,
               ConnectInterfaceFunc      connect_func,
@@ -428,7 +436,7 @@ mdraid_update (UDisksLinuxMDRaidObject  *object,
 
 static GList *
 find_link_for_sysfs_path_for_member (UDisksLinuxMDRaidObject *object,
-                                     const gchar            *sysfs_path)
+                                     const gchar             *sysfs_path)
 {
   GList *l;
   GList *ret;
@@ -670,8 +678,11 @@ udisks_linux_mdraid_object_uevent (UDisksLinuxMDRaidObject *object,
             {
               if (device != object->raid_device)
                 {
+                  /* device changed -- remove and re-add the file watchers */
+                  raid_device_removed (object, object->raid_device);
                   g_clear_object (&object->raid_device);
                   object->raid_device = g_object_ref (device);
+                  raid_device_added (object, object->raid_device);
                 }
             }
         }
@@ -707,6 +718,81 @@ udisks_linux_mdraid_object_have_devices (UDisksLinuxMDRaidObject   *object)
   return g_list_length (object->member_devices) > 0 || object->raid_device != NULL;
 }
 
+UDisksBaseJob *
+udisks_linux_mdraid_object_get_sync_job (UDisksLinuxMDRaidObject *object)
+{
+  UDisksBaseJob *rval = NULL;
+
+  g_return_val_if_fail (UDISKS_IS_LINUX_MDRAID_OBJECT (object), NULL);
+
+  g_mutex_lock (&object->sync_job_mutex);
+  rval = object->sync_job;
+  g_mutex_unlock (&object->sync_job_mutex);
+
+  return rval;
+}
+
+gboolean
+udisks_linux_mdraid_object_set_sync_job  (UDisksLinuxMDRaidObject *object,
+                                          UDisksBaseJob           *job)
+{
+  gboolean rval = TRUE;
+
+  g_return_val_if_fail (UDISKS_IS_LINUX_MDRAID_OBJECT (object), FALSE);
+
+  g_mutex_lock (&object->sync_job_mutex);
+  if (! object->sync_job)
+    object->sync_job = g_object_ref (job);
+  else
+    rval = FALSE;
+  g_mutex_unlock (&object->sync_job_mutex);
+
+  return rval;
+}
+
+gboolean
+udisks_linux_mdraid_object_complete_sync_job (UDisksLinuxMDRaidObject *object,
+                                              gboolean                 success,
+                                              const gchar             *message)
+{
+  gboolean rval = TRUE;
+
+  g_return_val_if_fail (UDISKS_IS_LINUX_MDRAID_OBJECT (object), FALSE);
+
+  g_mutex_lock (&object->sync_job_mutex);
+
+  if (! object->sync_job)
+    {
+      rval = FALSE;
+    }
+  else
+    {
+      udisks_simple_job_complete (UDISKS_SIMPLE_JOB (object->sync_job),
+                                  success,
+                                  message);
+
+      g_clear_object (&object->sync_job);
+    }
+
+  g_mutex_unlock (&object->sync_job_mutex);
+
+  return rval;
+}
+
+gboolean
+udisks_linux_mdraid_object_has_sync_job (UDisksLinuxMDRaidObject *object)
+{
+  gboolean rval = FALSE;
+
+  g_return_val_if_fail (UDISKS_IS_LINUX_MDRAID_OBJECT (object), FALSE);
+
+  g_mutex_lock (&object->sync_job_mutex);
+  rval = object->sync_job != NULL;
+  g_mutex_unlock (&object->sync_job_mutex);
+
+  return rval;
+}
+
 /**
  * udisks_linux_mdraid_object_get_uuid:
  * @object: A #UDisksLinuxMDRaidObject.
@@ -721,5 +807,3 @@ udisks_linux_mdraid_object_get_uuid (UDisksLinuxMDRaidObject *object)
   g_return_val_if_fail (UDISKS_IS_LINUX_MDRAID_OBJECT (object), NULL);
   return object->uuid;
 }
-
-

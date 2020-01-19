@@ -1,0 +1,514 @@
+From 5bcb348b17935328a2344d811ddba9847ab3c846 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 16 Oct 2017 12:33:14 +0200
+Subject: [PATCH 1/5] Move some useful mdraid functions to a helper file
+
+Related: rhbz#1400056
+Signed-off-by: Vratislav Podzimek <vpodzime@redhat.com>
+---
+ src/Makefile.am                |   1 +
+ src/udiskslinuxmdraid.c        |  83 ++------------------------------
+ src/udiskslinuxmdraidhelpers.c | 104 +++++++++++++++++++++++++++++++++++++++++
+ src/udiskslinuxmdraidhelpers.h |  41 ++++++++++++++++
+ 4 files changed, 149 insertions(+), 80 deletions(-)
+ create mode 100644 src/udiskslinuxmdraidhelpers.c
+ create mode 100644 src/udiskslinuxmdraidhelpers.h
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 396ab4e..9cca8cd 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -66,6 +66,7 @@ libudisks_daemon_la_SOURCES =                                                  \
+ 	udiskslinuxdrive.h             udiskslinuxdrive.c                      \
+ 	udiskslinuxdriveata.h          udiskslinuxdriveata.c                   \
+ 	udiskslinuxmdraidobject.h      udiskslinuxmdraidobject.c               \
++	udiskslinuxmdraidhelpers.h     udiskslinuxmdraidhelpers.c              \
+ 	udiskslinuxmdraid.h            udiskslinuxmdraid.c                     \
+ 	udiskslinuxmanager.h           udiskslinuxmanager.c                    \
+ 	udiskslinuxfsinfo.h            udiskslinuxfsinfo.c                     \
+diff --git a/src/udiskslinuxmdraid.c b/src/udiskslinuxmdraid.c
+index 9bf6ae9..2dcf0ff 100644
+--- a/src/udiskslinuxmdraid.c
++++ b/src/udiskslinuxmdraid.c
+@@ -38,6 +38,7 @@
+ #include "udiskslinuxprovider.h"
+ #include "udiskslinuxmdraidobject.h"
+ #include "udiskslinuxmdraid.h"
++#include "udiskslinuxmdraidhelpers.h"
+ #include "udiskslinuxblockobject.h"
+ #include "udisksdaemon.h"
+ #include "udisksstate.h"
+@@ -128,68 +129,6 @@ udisks_linux_mdraid_new (void)
+ 
+ /* ---------------------------------------------------------------------------------------------------- */
+ 
+-static gchar *
+-read_sysfs_attr (GUdevDevice *device,
+-                 const gchar *attr)
+-{
+-  gchar *ret = NULL;
+-  gchar *path = NULL;
+-  GError *error = NULL;
+-
+-  g_return_val_if_fail (G_UDEV_IS_DEVICE (device), NULL);
+-
+-  path = g_strdup_printf ("%s/%s", g_udev_device_get_sysfs_path (device), attr);
+-  if (!g_file_get_contents (path, &ret, NULL /* size */, &error))
+-    {
+-      udisks_warning ("Error reading sysfs attr `%s': %s (%s, %d)",
+-                      path, error->message, g_quark_to_string (error->domain), error->code);
+-      g_clear_error (&error);
+-      goto out;
+-    }
+-
+- out:
+-  g_free (path);
+-  return ret;
+-}
+-
+-static gint
+-read_sysfs_attr_as_int (GUdevDevice *device,
+-                        const gchar *attr)
+-{
+-  gint ret = 0;
+-  gchar *str = NULL;
+-
+-  str = read_sysfs_attr (device, attr);
+-  if (str == NULL)
+-    goto out;
+-
+-  ret = atoi (str);
+-  g_free (str);
+-
+- out:
+-  return ret;
+-}
+-
+-static guint64
+-read_sysfs_attr_as_uint64 (GUdevDevice *device,
+-                           const gchar *attr)
+-{
+-  guint64 ret = 0;
+-  gchar *str = NULL;
+-
+-  str = read_sysfs_attr (device, attr);
+-  if (str == NULL)
+-    goto out;
+-
+-  ret = atoll (str);
+-  g_free (str);
+-
+- out:
+-  return ret;
+-}
+-
+-/* ---------------------------------------------------------------------------------------------------- */
+-
+ static gboolean
+ on_polling_timout (gpointer user_data)
+ {
+@@ -306,8 +245,6 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+   guint64 sync_remaining_time = 0;
+   GVariantBuilder builder;
+   UDisksDaemon *daemon = NULL;
+-  gboolean has_redundancy = FALSE;
+-  gboolean has_stripes = FALSE;
+   UDisksBaseJob *job = NULL;
+ 
+   daemon = udisks_linux_mdraid_object_get_daemon (object);
+@@ -377,23 +314,9 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+ 
+   udisks_mdraid_set_running (iface, raid_device != NULL);
+ 
+-  if (g_strcmp0 (level, "raid1") == 0 ||
+-      g_strcmp0 (level, "raid4") == 0 ||
+-      g_strcmp0 (level, "raid5") == 0 ||
+-      g_strcmp0 (level, "raid6") == 0 ||
+-      g_strcmp0 (level, "raid10") == 0)
+-    has_redundancy = TRUE;
+-
+-  if (g_strcmp0 (level, "raid0") == 0 ||
+-      g_strcmp0 (level, "raid4") == 0 ||
+-      g_strcmp0 (level, "raid5") == 0 ||
+-      g_strcmp0 (level, "raid6") == 0 ||
+-      g_strcmp0 (level, "raid10") == 0)
+-    has_stripes = TRUE;
+-
+   if (raid_device != NULL)
+     {
+-      if (has_redundancy)
++      if (mdraid_has_redundancy (level))
+         {
+           /* Can't use GUdevDevice methods as they cache the result and these variables vary */
+           degraded = read_sysfs_attr_as_int (raid_device->udev_device, "md/degraded");
+@@ -408,7 +331,7 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+             g_strstrip (bitmap_location);
+         }
+ 
+-      if (has_stripes)
++      if (mdraid_has_stripes (level))
+         {
+           chunk_size = read_sysfs_attr_as_uint64 (raid_device->udev_device, "md/chunk_size");
+         }
+diff --git a/src/udiskslinuxmdraidhelpers.c b/src/udiskslinuxmdraidhelpers.c
+new file mode 100644
+index 0000000..dafdddf
+--- /dev/null
++++ b/src/udiskslinuxmdraidhelpers.c
+@@ -0,0 +1,104 @@
++/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*-
++ *
++ * Copyright (C) 2017 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ * Author: Vojtech Trefny <vtrefny@redhat.com>
++ *
++ */
++
++#include <glib.h>
++#include <gudev/gudev.h>
++#include <stdlib.h>
++
++#include "udiskslinuxmdraidhelpers.h"
++#include "udiskslogging.h"
++
++gboolean
++mdraid_has_redundancy (const gchar *raid_level)
++{
++  return raid_level != NULL &&
++         g_str_has_prefix (raid_level, "raid") &&
++         g_strcmp0 (raid_level, "raid0") != 0;
++}
++
++gboolean
++mdraid_has_stripes (const gchar *raid_level)
++{
++  return raid_level != NULL &&
++         g_str_has_prefix (raid_level, "raid") &&
++         g_strcmp0 (raid_level, "raid1") != 0;
++}
++
++gchar *
++read_sysfs_attr (GUdevDevice *device,
++                 const gchar *attr)
++{
++  gchar *ret = NULL;
++  gchar *path = NULL;
++  GError *error = NULL;
++
++  g_return_val_if_fail (G_UDEV_IS_DEVICE (device), NULL);
++
++  path = g_strdup_printf ("%s/%s", g_udev_device_get_sysfs_path (device), attr);
++  if (!g_file_get_contents (path, &ret, NULL /* size */, &error))
++    {
++      udisks_warning ("Error reading sysfs attr `%s': %s (%s, %d)",
++                      path, error->message, g_quark_to_string (error->domain), error->code);
++      g_clear_error (&error);
++      goto out;
++    }
++
++ out:
++  g_free (path);
++  return ret;
++}
++
++gint
++read_sysfs_attr_as_int (GUdevDevice *device,
++                        const gchar *attr)
++{
++  gint ret = 0;
++  gchar *str = NULL;
++
++  str = read_sysfs_attr (device, attr);
++  if (str == NULL)
++    goto out;
++
++  ret = atoi (str);
++  g_free (str);
++
++ out:
++  return ret;
++}
++
++guint64
++read_sysfs_attr_as_uint64 (GUdevDevice *device,
++                           const gchar *attr)
++{
++  guint64 ret = 0;
++  gchar *str = NULL;
++
++  str = read_sysfs_attr (device, attr);
++  if (str == NULL)
++    goto out;
++
++  ret = atoll (str);
++  g_free (str);
++
++ out:
++  return ret;
++}
+diff --git a/src/udiskslinuxmdraidhelpers.h b/src/udiskslinuxmdraidhelpers.h
+new file mode 100644
+index 0000000..6d2b714
+--- /dev/null
++++ b/src/udiskslinuxmdraidhelpers.h
+@@ -0,0 +1,41 @@
++/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*-
++ *
++ * Copyright (C) 2017 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ * Author: Vojtech Trefny <vtrefny@redhat.com>
++ *
++ */
++
++#ifndef __UDISKS_LINUX_MDRAID_HELPERS_H__
++#define __UDISKS_LINUX_MDRAID_HEPLERS_H__
++
++#include <glib.h>
++#include <gudev/gudev.h>
++
++
++G_BEGIN_DECLS
++
++gboolean mdraid_has_redundancy (const gchar *raid_level);
++gboolean mdraid_has_stripes (const gchar *raid_level);
++gchar   *read_sysfs_attr (GUdevDevice *device, const gchar *attr);
++gint     read_sysfs_attr_as_int (GUdevDevice *device, const gchar *attr);
++guint64  read_sysfs_attr_as_uint64 (GUdevDevice *device, const gchar *attr);
++
++G_END_DECLS
++
++
++#endif /* __UDISKS_LINUX_MDRAID_HEPLERS_H__ */
+-- 
+2.9.5
+
+From 61ff342139f21663958bcc2972a3efa37cf7bc83 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 16 Oct 2017 12:41:22 +0200
+Subject: [PATCH 2/5] Remove leading/trailing white space in 'read_sysfs_attr'
+
+So we don't have to call 'g_strstrip' after using it.
+
+Related: rhbz#1400056
+Signed-off-by: Vratislav Podzimek <vpodzime@redhat.com>
+---
+ src/udiskslinuxmdraid.c        | 8 --------
+ src/udiskslinuxmdraidhelpers.c | 4 ++++
+ 2 files changed, 4 insertions(+), 8 deletions(-)
+
+diff --git a/src/udiskslinuxmdraid.c b/src/udiskslinuxmdraid.c
+index 2dcf0ff..22b4ee4 100644
+--- a/src/udiskslinuxmdraid.c
++++ b/src/udiskslinuxmdraid.c
+@@ -321,14 +321,8 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+           /* Can't use GUdevDevice methods as they cache the result and these variables vary */
+           degraded = read_sysfs_attr_as_int (raid_device->udev_device, "md/degraded");
+           sync_action = read_sysfs_attr (raid_device->udev_device, "md/sync_action");
+-          if (sync_action != NULL)
+-            g_strstrip (sync_action);
+           sync_completed = read_sysfs_attr (raid_device->udev_device, "md/sync_completed");
+-          if (sync_completed != NULL)
+-            g_strstrip (sync_completed);
+           bitmap_location = read_sysfs_attr (raid_device->udev_device, "md/bitmap/location");
+-          if (bitmap_location != NULL)
+-            g_strstrip (bitmap_location);
+         }
+ 
+       if (mdraid_has_stripes (level))
+@@ -472,7 +466,6 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+               member_state = read_sysfs_attr (raid_device->udev_device, buf);
+               if (member_state != NULL)
+                 {
+-                  g_strstrip (member_state);
+                   member_state_elements = g_strsplit (member_state, ",", 0);
+                 }
+               else
+@@ -486,7 +479,6 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+               member_slot = read_sysfs_attr (raid_device->udev_device, buf);
+               if (member_slot != NULL)
+                 {
+-                  g_strstrip (member_slot);
+                   if (g_strcmp0 (member_slot, "none") != 0)
+                     member_slot_as_int = atoi (member_slot);
+                 }
+diff --git a/src/udiskslinuxmdraidhelpers.c b/src/udiskslinuxmdraidhelpers.c
+index dafdddf..297b1fa 100644
+--- a/src/udiskslinuxmdraidhelpers.c
++++ b/src/udiskslinuxmdraidhelpers.c
+@@ -62,6 +62,10 @@ read_sysfs_attr (GUdevDevice *device,
+       goto out;
+     }
+ 
++  /* remove newline from the attribute */
++  if (ret != NULL)
++    g_strstrip (ret);
++
+  out:
+   g_free (path);
+   return ret;
+-- 
+2.9.5
+
+From 756571efc1b0d602bca2dd4ff761dca686dc08bd Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 16 Oct 2017 12:42:42 +0200
+Subject: [PATCH 3/5] Do not try to create file watchers for RAIDs without
+ redundancy
+
+We are trying to watch 'md/degraded' and 'md/sync_action' sysfs
+files for all RAIDs but these files exist only for RAIDs with
+redundancy -- we shouldn't do this for raid0, containers and linear
+RAIDs.
+
+Resolves: rhbz#1400056
+Signed-off-by: Vratislav Podzimek <vpodzime@redhat.com>
+---
+ src/udiskslinuxmdraidobject.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/udiskslinuxmdraidobject.c b/src/udiskslinuxmdraidobject.c
+index 493145e..1d2f07a 100644
+--- a/src/udiskslinuxmdraidobject.c
++++ b/src/udiskslinuxmdraidobject.c
+@@ -30,6 +30,7 @@
+ #include "udisksdaemonutil.h"
+ #include "udiskslinuxprovider.h"
+ #include "udiskslinuxmdraidobject.h"
++#include "udiskslinuxmdraidhelpers.h"
+ #include "udiskslinuxmdraid.h"
+ #include "udiskslinuxblockobject.h"
+ #include "udiskslinuxdevice.h"
+@@ -552,9 +553,18 @@ static void
+ raid_device_added (UDisksLinuxMDRaidObject *object,
+                    UDisksLinuxDevice       *device)
+ {
++  gchar *level = NULL;
++
+   g_assert (object->sync_action_source == NULL);
+   g_assert (object->degraded_source == NULL);
+ 
++  if (!UDISKS_IS_LINUX_DEVICE (device))
++    goto out;
++
++  level = read_sysfs_attr (device->udev_device, "md/level");
++  if (level == NULL || !mdraid_has_redundancy (level))
++    goto out;
++
+   /* udisks_debug ("start watching %s", g_udev_device_get_sysfs_path (device->udev_device)); */
+   object->sync_action_source = watch_attr (device,
+                                            "md/sync_action",
+@@ -564,6 +574,9 @@ raid_device_added (UDisksLinuxMDRaidObject *object,
+                                         "md/degraded",
+                                         (GSourceFunc) attr_changed,
+                                         object);
++
++ out:
++  g_free (level);
+ }
+ 
+ static void
+@@ -684,6 +697,12 @@ udisks_linux_mdraid_object_uevent (UDisksLinuxMDRaidObject *object,
+                   object->raid_device = g_object_ref (device);
+                   raid_device_added (object, object->raid_device);
+                 }
++              else if (object->sync_action_source == NULL && object->degraded_source == NULL)
++                {
++                  /* we don't have file watchers, adding them may failed because
++                     we were unable to get raid level, let's try again */
++                  raid_device_added (object, object->raid_device);
++                }
+             }
+         }
+     }
+-- 
+2.9.5
+
+From ab6ee79abac6a75eddd0ecfba7fc5111663bc50f Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Mon, 16 Oct 2017 15:26:16 +0200
+Subject: [PATCH 5/5] Try to use libblockdev to get RAID array size
+
+If reading size from sysfs fails, try to use libblockdev to read
+it from mdadm --examine data.
+
+Signed-off-by: Vratislav Podzimek <vpodzime@redhat.com>
+---
+ src/udiskslinuxmdraid.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/src/udiskslinuxmdraid.c b/src/udiskslinuxmdraid.c
+index 22b4ee4..6c94a2b 100644
+--- a/src/udiskslinuxmdraid.c
++++ b/src/udiskslinuxmdraid.c
+@@ -246,6 +246,8 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+   GVariantBuilder builder;
+   UDisksDaemon *daemon = NULL;
+   UDisksBaseJob *job = NULL;
++  GError *error = NULL;
++  BDMDExamineData *raid_data = NULL;
+ 
+   daemon = udisks_linux_mdraid_object_get_daemon (object);
+ 
+@@ -303,7 +305,15 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+     }
+   else
+     {
+-      /* TODO: need MD_ARRAY_SIZE, see https://bugs.freedesktop.org/show_bug.cgi?id=53239#c5 */
++      raid_data = bd_md_examine (g_udev_device_get_device_file (device->udev_device),
++                                 &error);
++      if (raid_data == NULL)
++        {
++          udisks_debug ("Failed to read array size: %s", error->message);
++          g_clear_error (&error);
++        }
++      else
++          size = raid_data->size;
+     }
+ 
+   udisks_mdraid_set_uuid (iface, uuid);
+@@ -523,11 +533,14 @@ udisks_linux_mdraid_update (UDisksLinuxMDRaid       *mdraid,
+                                                                                 uuid));
+ 
+  out:
++  if (raid_data)
++      bd_md_examine_data_free (raid_data);
+   g_free (sync_completed);
+   g_free (sync_action);
+   g_free (bitmap_location);
+   g_list_free_full (member_devices, g_object_unref);
+   g_clear_object (&raid_device);
++  g_clear_error (&error);
+   return ret;
+ }
+ 
+-- 
+2.9.5
+

@@ -1,10 +1,14 @@
 ## Process this file with automake to produce Makefile.in
 
-SUBDIRS =
+SUBDIRS = modules.conf.d
 
 NULL =
 
-INCLUDES = \
+moduleconfdir = $(sysconfdir)/udisks2/
+
+moduleconf_DATA = udisks2.conf
+
+AM_CPPFLAGS = \
 	-I$(top_builddir) -I$(top_srcdir)	 		\
 	-DPACKAGE_LIBEXEC_DIR=\""$(libexecdir)"\" 		\
 	-DPACKAGE_SYSCONF_DIR=\""$(sysconfdir)"\" 		\
@@ -86,6 +90,7 @@ libudisks2_la_SOURCES =									\
 
 libudisks2_la_CPPFLAGS = 				\
 	-DG_LOG_DOMAIN=\"libudisks2\"			\
+	$(AM_CPPFLAGS)					\
 	$(NULL)
 
 libudisks2_la_CFLAGS = 					\
@@ -146,6 +151,7 @@ endif # HAVE_INTROSPECTION
 CLEANFILES = udisks-generated-doc-*.xml udisks-generated.[ch] $(gir_DATA) $(typelibs_DATA)
 
 EXTRA_DIST = 						\
+	udisks2.conf.in                                 \
 	udisks2.pc.in					\
 	udisksversion.h.in				\
 	udisksenumtypes.h.template			\
